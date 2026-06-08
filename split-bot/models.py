@@ -32,6 +32,9 @@ class AggregateResult:
     # BloxyCleaner
     bloxycleaner_flagged:    bool            = False
     bloxycleaner_servers:    list            = field(default_factory=list)
+    # RoCleaner
+    rocleaner_flagged:       bool            = False
+    rocleaner_servers:       list            = field(default_factory=list)
     # Meta
     sources_flagged:         list            = field(default_factory=list)
     sources_checked:         list            = field(default_factory=list)
@@ -46,4 +49,6 @@ class AggregateResult:
             and self.rotector_flag_type in (None, 0)
             and not self.bloxycleaner_flagged
             and not self.moco_group_count
+            and not self.rocleaner_flagged
         )
+
