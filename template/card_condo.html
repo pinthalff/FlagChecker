@@ -1,0 +1,51 @@
+{% extends "_base.html" %}
+{% block card_content %}
+
+<div class="header">
+  <div>
+    <div class="title">🔍 {{ title }}</div>
+    <div class="search-meta">
+      {% if roblox %}Roblox: <span class="pill">{{ roblox }}</span><br>{% endif %}
+      Servers: <span class="pill">{{ total_condo }} condo</span> <span class="pill">{{ total_exploit }} exploit</span><br>
+      First: <span class="pill">{{ first_detected }}</span>
+      Last: <span class="pill">{{ most_recent }}</span>
+    </div>
+    <div class="source-row">
+      {% for chip in source_chips %}
+      <span class="source-chip">{{ chip.emoji }} {{ chip.label }} <strong>{{ chip.value }}</strong></span>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="avatar">
+    {% if avatar_url %}<img src="{{ avatar_url }}" onerror="this.style.display='none'">{% endif %}
+  </div>
+</div>
+
+<span class="divider-line"></span>
+
+<div class="section-label">🚨 Condo Servers Detected</div>
+{% if condo_servers %}
+  {% if detected_by %}
+  <div class="detected-by">Detected by:
+    {% for src in detected_by %}<span class="src-tag">{{ src }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  <div class="server-list">
+    {% for srv in condo_servers %}
+    <div class="server-item">
+      <div class="server-name">🔹 {{ srv.name }}<span class="server-sources">{{ srv.sources }}</span></div>
+      <div class="server-times">First {{ srv.first_seen }} · Last {{ srv.last_seen }}</div>
+    </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="no-flag">🪬 This user has not been flagged by TASE.</div>
+{% endif %}
+
+{% if total_pages > 1 %}
+<div class="clearfix">
+  <span class="page-pill">Page {{ page }} / {{ total_pages }}</span>
+</div>
+{% endif %}
+
+{% endblock %}

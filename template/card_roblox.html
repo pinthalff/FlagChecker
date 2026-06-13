@@ -1,0 +1,56 @@
+{% extends "_base.html" %}
+{% block card_content %}
+
+<div class="header">
+  <div>
+    <div class="title">{{ display_name or username or user_id }}</div>
+    <div class="profile-row">
+      Username: <span class="pill">{{ username or "n/a" }}</span><br>
+      Display: <span class="pill">{{ display_name or "n/a" }}</span><br>
+      User ID: <span class="pill">{{ user_id }}</span><br>
+      First Seen: <span class="pill">{{ first_seen }}</span><br>
+      Last Seen: <span class="pill">{{ last_seen }}</span>
+    </div>
+    {% if flagged %}
+    <div style="margin-top:8px;">
+      <span class="status-badge {{ status_class }}">{{ status }}</span>
+      {% if confidence %}<span class="badge" style="margin-left:6px;">🎯 <strong>{{ confidence }}%</strong></span>{% endif %}
+      {% if is_locked %}<span class="badge" style="margin-left:4px;">🔒 Locked</span>{% endif %}
+    </div>
+    {% else %}
+    <div style="margin-top:8px;">
+      <span class="status-badge clear">✓ Not Detected</span>
+    </div>
+    {% endif %}
+  </div>
+  <div class="avatar">
+    {% if avatar_url %}<img src="{{ avatar_url }}" onerror="this.style.display='none'">{% endif %}
+  </div>
+</div>
+
+{% if description %}
+<span class="divider-line"></span>
+<div class="section-label">📝 Description</div>
+<div class="description-box">{{ description }}</div>
+{% endif %}
+
+{% if reasons %}
+<span class="divider-line"></span>
+<div class="section-label">🚩 Flag Reasons</div>
+<ul class="reasons-list">
+  {% for r in reasons %}
+  <li>{{ r }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if not flagged and not description and not reasons %}
+<span class="divider-line"></span>
+<div class="no-flag">🪬 This user is not detected by Rotector.</div>
+{% endif %}
+
+<span class="divider-line"></span>
+<div class="section-label" style="float:right;letter-spacing:0;">Source: Rotector</div>
+<div style="clear:both;"></div>
+
+{% endblock %}
