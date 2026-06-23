@@ -40,9 +40,12 @@ class AggregateResult:
     moco_group_count:        Optional[int]   = None
     moco_group_types:        list            = field(default_factory=list)
     moco_groups:             list            = field(default_factory=list)
-    # BloxyCleaner
+    # BloxyCleaner — ERP database
     bloxycleaner_flagged:    bool            = False
     bloxycleaner_servers:    list            = field(default_factory=list)
+    # BloxyCleaner — Exploit database
+    bloxycleaner_exploit_flagged: bool       = False
+    bloxycleaner_exploit_servers: list       = field(default_factory=list)
     # RoCleaner (imported database)
     rocleaner_flagged:       bool            = False
     rocleaner_servers:       list            = field(default_factory=list)
@@ -59,6 +62,7 @@ class AggregateResult:
             and not self.rw_exploit_count
             and self.rotector_flag_type in (None, 0)
             and not self.bloxycleaner_flagged
+            and not self.bloxycleaner_exploit_flagged
             and not self.moco_group_count
             and not self.rocleaner_flagged
         )

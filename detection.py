@@ -46,9 +46,17 @@ async def _fetch_tase(session, discord_id: str) -> dict:
     return await _get(session, f"https://api.tasebot.org/v2/check/{discord_id}",
                       {"Authorization": config.TASE_API_KEY})
 
-async def _fetch_bloxycleaner(session, discord_id: str) -> dict:
+async def _fetch_bloxycleaner_erp(session, discord_id: str) -> dict:
+    """GET /p/api/v1/erp/lookup — ERP (condo) database."""
     token = config.BLOXYCLEANER_API_KEY or "pub-freeusage"
-    data  = await _get(session, f"{config.BLOXYCLEANER_BASE}/p/api/v1/flagged",
+    data  = await _get(session, f"{config.BLOXYCLEANER_BASE}/p/api/v1/erp/lookup",
+                       {"Authorization": token}, {"userid": discord_id}, timeout=20)
+    return data.get("users", {}).get(str(discord_id), {})
+
+async def _fetch_bloxycleaner_exp(session, discord_id: str) -> dict:
+    """GET /p/api/v1/exp/lookup — Exploit database."""
+    token = config.BLOXYCLEANER_API_KEY or "pub-freeusage"
+    data  = await _get(session, f"{config.BLOXYCLEANER_BASE}/p/api/v1/exp/lookup",
                        {"Authorization": token}, {"userid": discord_id}, timeout=20)
     return data.get("users", {}).get(str(discord_id), {})
 
@@ -125,41 +133,39 @@ def _extract_groups_from_reasons(reasons_raw) -> list[dict]:
     return groups
 
 
+def _merge_server(by_key: dict, name_index: dict, server: dict, source: str) -> None:
+    if not server: return
+    sid  = server.get("id") or server.get("serverId")
+    name = server.get("name") or server.get("serverName") or "Unknown"
+    nlow = name.lower()
+    key  = str(sid) if sid else name_index.get(nlow, nlow)
+    entry = by_key.setdefault(key, {"id": sid, "name": name, "sources": [], "last_seen": None})
+    if sid and entry.get("id") is None:
+        entry["id"] = sid
+    name_index.setdefault(nlow, key)
+    if source not in entry["sources"]: entry["sources"].append(source)
+    ts = _safe_ts(server.get("lastSeen") or server.get("updatedAt") or server.get("firstSeenAt"))
+    if ts is not None and (entry["last_seen"] is None or ts > entry["last_seen"]):
+        entry["last_seen"] = ts
+
+
 def correlate_condo_servers(agg: AggregateResult) -> list[dict]:
     by_key: dict     = {}
     name_index: dict = {}
-
-    def _add(server: dict, source: str):
-        if not server: return
-        sid  = server.get("id") or server.get("serverId")
-        name = server.get("name") or server.get("serverName") or "Unknown"
-        nlow = name.lower()
-        if sid:
-            key = str(sid)
-        else:
-            key = name_index.get(nlow, nlow)
-        entry = by_key.setdefault(key, {"id": sid, "name": name, "sources": [], "last_seen": None})
-        if sid and entry.get("id") is None:
-            entry["id"] = sid
-        name_index.setdefault(nlow, key)
-        if source not in entry["sources"]: entry["sources"].append(source)
-        ts = _safe_ts(server.get("lastSeen") or server.get("updatedAt") or server.get("firstSeenAt"))
-        if ts is not None and (entry["last_seen"] is None or ts > entry["last_seen"]):
-            entry["last_seen"] = ts
-
-    for s in agg.tase_guilds:              _add(s, "TASE")
-    for s in agg.rw_condo_servers:         _add(s, "RobloxWatcher")
-    for s in agg.bloxycleaner_servers:     _add(s, "BloxyCleaner")
-    for s in agg.rocleaner_servers:        _add(s, "RoCleaner")
-    for s in agg.rotector_discord_servers: _add(s, "Rotector")
+    for s in agg.tase_guilds:              _merge_server(by_key, name_index, s, "TASE")
+    for s in agg.rw_condo_servers:         _merge_server(by_key, name_index, s, "RobloxWatcher")
+    for s in agg.bloxycleaner_servers:     _merge_server(by_key, name_index, s, "BloxyCleaner")
+    for s in agg.rocleaner_servers:        _merge_server(by_key, name_index, s, "RoCleaner")
+    for s in agg.rotector_discord_servers: _merge_server(by_key, name_index, s, "Rotector")
     return sorted(by_key.values(), key=lambda x: x["last_seen"] or 0, reverse=True)
 
 
 def correlate_exploit_servers(agg: AggregateResult) -> list[dict]:
-    return [
-        {"id": s.get("id"), "name": s.get("name") or "Unknown", "sources": ["RobloxWatcher"]}
-        for s in agg.rw_exploit_servers
-    ]
+    by_key: dict     = {}
+    name_index: dict = {}
+    for s in agg.rw_exploit_servers:           _merge_server(by_key, name_index, s, "RobloxWatcher")
+    for s in agg.bloxycleaner_exploit_servers: _merge_server(by_key, name_index, s, "BloxyCleaner")
+    return sorted(by_key.values(), key=lambda x: x["last_seen"] or 0, reverse=True)
 
 
 def format_last_seen(ts: Optional[int]) -> str:
@@ -214,7 +220,8 @@ class DetectionService:
                 jobs.append(("tase", _fetch_tase(sess, user_id)))
             if "BLOXYCLEANER" not in disabled_apis:
                 checked.append("BloxyCleaner")
-                jobs.append(("bc", _fetch_bloxycleaner(sess, user_id)))
+                jobs.append(("bc_erp", _fetch_bloxycleaner_erp(sess, user_id)))
+                jobs.append(("bc_exp", _fetch_bloxycleaner_exp(sess, user_id)))
             if "ROBLOXWATCHER" not in disabled_apis:
                 checked.append("RobloxWatcher")
                 jobs.append(("rw", _fetch_robloxwatcher(sess, user_id)))
@@ -245,10 +252,16 @@ class DetectionService:
                 if agg.tase_score and agg.tase_score > 0:
                     agg.sources_flagged.append("TASE")
 
-            elif key == "bc" and res:
+            elif key == "bc_erp" and res:
                 agg.bloxycleaner_flagged = res.get("f", False)
                 agg.bloxycleaner_servers = res.get("servers", [])
-                if agg.bloxycleaner_flagged:
+                if agg.bloxycleaner_flagged and "BloxyCleaner" not in agg.sources_flagged:
+                    agg.sources_flagged.append("BloxyCleaner")
+
+            elif key == "bc_exp" and res:
+                agg.bloxycleaner_exploit_flagged = res.get("f", False)
+                agg.bloxycleaner_exploit_servers = res.get("servers", [])
+                if agg.bloxycleaner_exploit_flagged and "BloxyCleaner" not in agg.sources_flagged:
                     agg.sources_flagged.append("BloxyCleaner")
 
             elif key == "rw" and res:

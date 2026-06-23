@@ -54,7 +54,7 @@ def build_overview_embed(interaction, agg: AggregateResult,
         f"{_dot(bool(agg.rw_exploit_count))} RW Exploits ({agg.rw_exploit_count})\n"
         f"{_dot(bool(agg.rotector_flag_type))} Rotector\n"
         f"{_dot(bool(agg.moco_group_count))} Moco-co\n"
-        f"{_dot(agg.bloxycleaner_flagged)} BloxyCleaner"
+        f"{_dot(agg.bloxycleaner_flagged or agg.bloxycleaner_exploit_flagged)} BloxyCleaner"
     ), inline=True)
     e.add_field(name="Flagged By",
                 value=", ".join(agg.sources_flagged) if agg.sources_flagged else "✅ None",
@@ -342,7 +342,7 @@ def build_check_condos(agg: AggregateResult) -> discord.Embed:
 
 
 def build_check_exploits(agg: AggregateResult) -> discord.Embed:
-    """Exploit records — ONLY uses RobloxWatcher/ExploitWatcher."""
+    """Exploit records — aggregated from RobloxWatcher and BloxyCleaner (Exploit DB)."""
     exploits = correlate_exploit_servers(agg)
     desc = f"**Total Records:** `{len(exploits)}`\n"
 
@@ -352,7 +352,7 @@ def build_check_exploits(agg: AggregateResult) -> discord.Embed:
         for s in exploits[:15]:
             line  = f"• **{s['name']}**"
             if s.get("id"): line += f" (`{s['id']}`)"
-            line += f"\n   ↳ Source: `RobloxWatcher / ExploitWatcher`"
+            line += f"\n   ↳ Source: `{', '.join(s.get('sources', [])) or 'Unknown'}`"
             lines.append(line)
         desc += "\n\n".join(lines)
         if len(exploits) > 15:
@@ -430,7 +430,8 @@ def build_lookup_exploit_embed(user, agg: AggregateResult) -> discord.Embed:
     if exploits:
         lines = [f"• **{s['name']}** (`{s.get('id', '?')}`)" for s in exploits[:10]]
         desc += "\n".join(lines)
-        desc += f"\n\n🚨 Detected via **RobloxWatcher / ExploitWatcher**"
+        sources = sorted({src for s in exploits for src in s.get("sources", [])})
+        desc += f"\n\n🚨 Detected via **{' / '.join(sources)}**"
     else:
         desc += "🦦 This user has not been flagged for exploiting."
 

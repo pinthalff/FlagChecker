@@ -304,10 +304,17 @@ def build_check_details(agg: AggregateResult) -> dict:
         lines.append("")
 
     if agg.bloxycleaner_flagged:
-        lines.append(f"**BloxyCleaner**")
+        lines.append(f"**BloxyCleaner (ERP)**")
         lines.append(f"Flagged: Yes")
         if agg.bloxycleaner_servers:
             lines.append(f"Servers: `{len(agg.bloxycleaner_servers)}`")
+        lines.append("")
+
+    if agg.bloxycleaner_exploit_flagged:
+        lines.append(f"**BloxyCleaner (Exploit)**")
+        lines.append(f"Flagged: Yes")
+        if agg.bloxycleaner_exploit_servers:
+            lines.append(f"Servers: `{len(agg.bloxycleaner_exploit_servers)}`")
         lines.append("")
 
     if agg.rocleaner_flagged:
@@ -509,9 +516,10 @@ def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dic
     exploits = correlate_exploit_servers(agg)
     total    = len(exploits)
     if total:
-        head  = "## Detected in Roblox Watcher's database:"
+        sources = sorted({src for s in exploits for src in s.get("sources", [])})
+        head  = f"## Detected in {' / '.join(sources)}:"
         lines = [_server_line(s, extra) for s in exploits]
-        note  = (f"\n\n-# Roblox Watcher's database is a snapshot, not live.\n"
+        note  = (f"\n\n-# Data is a snapshot, not live.\n"
                  f"-# Page 1/1 · Servers: {total}")
         inner = [c_text(head), c_sep(), c_text("\n".join(lines) + note)]
     else:
@@ -547,10 +555,17 @@ def build_lookup_violation(user, agg: AggregateResult) -> dict:
         lines.append("")
 
     if agg.bloxycleaner_flagged:
-        lines.append("**BloxyCleaner**")
+        lines.append("**BloxyCleaner (ERP)**")
         lines.append("Flagged: Yes")
         if agg.bloxycleaner_servers:
             lines.append(f"Servers: `{len(agg.bloxycleaner_servers)}`")
+        lines.append("")
+
+    if agg.bloxycleaner_exploit_flagged:
+        lines.append("**BloxyCleaner (Exploit)**")
+        lines.append("Flagged: Yes")
+        if agg.bloxycleaner_exploit_servers:
+            lines.append(f"Servers: `{len(agg.bloxycleaner_exploit_servers)}`")
         lines.append("")
 
     if agg.rocleaner_flagged:
