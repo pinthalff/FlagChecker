@@ -86,27 +86,26 @@ async def _fetch_roblox_username(session, user_id: str) -> Optional[str]:
     data = await _get(session, f"https://users.roblox.com/v1/users/{user_id}")
     return data.get("name") or data.get("displayName")
 
-# ─────────────────────────────────────────────
-# Selfbot bridge — POST /check on the selfbot's HTTP API
-# ─────────────────────────────────────────────
 
 async def _fetch_selfbot(session, discord_id: str) -> dict:
     """
-    Queries the selfbot's /check endpoint.
-    Returns the full guild report or {} on any failure.
-    Config keys needed:
-        SELFBOT_API_URL     — e.g. https://self-bot-production-adc8.up.railway.app
-        SELFBOT_API_KEY     — shared INTERNAL_API_KEY set in the selfbot Railway service
+    Queries the selfbot /check endpoint with deep=True so previous
+    members (left/kicked/banned) are detected via message history + log scan.
     """
     url = getattr(config, "SELFBOT_API_URL", "") or ""
     key = getattr(config, "SELFBOT_API_KEY", "") or ""
     if not url or not key:
         return {}
     try:
+        timeout = aiohttp.ClientTimeout(total=480, connect=15, sock_read=470)
         async with session.post(
             f"{url.rstrip('/')}/check",
-            json={"api_key": key, "user_id": int(discord_id)},
-            timeout=aiohttp.ClientTimeout(total=180, connect=15, sock_read=120),
+            json={
+                "api_key": key,
+                "user_id": int(discord_id),
+                "deep":    True,  # catches left/kicked/banned members
+            },
+            timeout=timeout,
         ) as r:
             if r.status == 200:
                 return await r.json()
@@ -259,7 +258,6 @@ class DetectionService:
             if "MOCO" not in disabled_apis:
                 checked.append("Moco-co")
                 jobs.append(("moco", _fetch_moco(sess, user_id)))
-            # ── Selfbot — always runs in Discord mode if configured ──
             if "SELFBOT" not in disabled_apis:
                 selfbot_url = getattr(config, "SELFBOT_API_URL", "") or ""
                 selfbot_key = getattr(config, "SELFBOT_API_KEY", "") or ""
@@ -350,20 +348,24 @@ class DetectionService:
                 if agg.moco_group_count:
                     agg.sources_flagged.append("Moco-co")
 
-            # ── Selfbot result parsing ──
             elif key == "selfbot" and res:
                 guilds = res.get("guilds", [])
                 if guilds:
+                    # ── Correct split — still_in_server True = current, anything else = previous ──
                     agg.selfbot_guilds        = guilds
-                    agg.selfbot_active_guilds = [g for g in guilds if g.get("still_in_server")]
-                    agg.selfbot_prev_guilds   = [g for g in guilds if not g.get("still_in_server")]
-                    agg.sources_flagged.append("Selfbot")
+                    agg.selfbot_active_guilds = [g for g in guilds if g.get("still_in_server") is True]
+                    agg.selfbot_prev_guilds   = [g for g in guilds if g.get("still_in_server") is not True]
+                    if "Selfbot" not in agg.sources_flagged:
+                        agg.sources_flagged.append("Selfbot")
+                    log.info(
+                        "[Selfbot] user %s — active: %d, previous: %d",
+                        user_id, len(agg.selfbot_active_guilds), len(agg.selfbot_prev_guilds)
+                    )
                 else:
                     agg.selfbot_guilds        = []
                     agg.selfbot_active_guilds = []
                     agg.selfbot_prev_guilds   = []
 
-        # RoCleaner — Discord mode only
         if not roblox_only and self._storage and "ROCLEANER" not in disabled_apis:
             checked.append("RoCleaner")
             servers = self._storage.get_rocleaner_servers(user_id)
