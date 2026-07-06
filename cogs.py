@@ -81,42 +81,70 @@ async def _fetch_user(bot, user_id: str):
 
 
 # ─────────────────────────────────────────────
-# Selfbot section builders
+# Role formatter — handles both dict and plain string
 # ─────────────────────────────────────────────
 
-def _build_selfbot_roles_embed(guild_data: dict) -> discord.Embed:
-    guild_name    = guild_data.get("guild_name", "Unknown")
-    roles         = guild_data.get("roles", [])
-    still_present = guild_data.get("still_in_server", False)
-    join_date     = guild_data.get("join_date", "unknown")
-    username      = guild_data.get("username", "Unknown")
+def _fmt_role(r) -> str:
+    if isinstance(r, dict):
+        name = r.get("name", f"Unknown ({r.get('id', '?')})")
+        rid  = r.get("id", "?")
+        return f"`{name}` (`{rid}`)"
+    return f"`{r}`"
+
+
+# ─────────────────────────────────────────────
+# Selfbot embed builders — V2 compatible
+# ─────────────────────────────────────────────
+
+def _build_selfbot_roles_embed(gd: dict) -> discord.Embed:
+    guild_name    = gd.get("guild_name", "Unknown")
+    roles         = gd.get("roles", [])
+    still_present = gd.get("still_in_server") is True
+    join_date     = gd.get("join_date", "unknown")
+    username      = gd.get("username", "Unknown")
+    guild_id      = gd.get("guild_id", "?")
 
     embed = discord.Embed(
-        title=f"📋 Roles — {guild_name}",
+        title=f"Roles — {guild_name}",
         color=0x57F287 if still_present else 0xFFA500,
     )
-    embed.add_field(name="Username", value=f"`{username}`",  inline=True)
-    embed.add_field(name="Status",   value="✅ Active" if still_present else "⚠️ Previous", inline=True)
-    embed.add_field(name="Joined",   value=f"`{join_date}`", inline=True)
-    role_display = "\n".join(f"`{r}`" for r in roles) if roles else "*No roles*"
-    embed.add_field(name="Roles",    value=role_display,     inline=False)
+    embed.add_field(name="User",     value=f"`{username}`",                            inline=True)
+    embed.add_field(name="Status",   value="Current" if still_present else "Previous", inline=True)
+    embed.add_field(name="Joined",   value=f"`{join_date}`",                           inline=True)
+    embed.add_field(name="Guild ID", value=f"`{guild_id}`",                            inline=False)
+
+    if roles:
+        lines      = [_fmt_role(r) for r in roles]
+        chunk_size = 20
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i + chunk_size]
+            embed.add_field(
+                name=f"Roles ({len(roles)})" if i == 0 else "Roles (cont.)",
+                value="\n".join(chunk),
+                inline=False
+            )
+    else:
+        embed.add_field(name="Roles", value="*No roles recorded*", inline=False)
+
     return embed
 
 
-def _build_selfbot_messages_embed(guild_data: dict) -> discord.Embed:
-    guild_name    = guild_data.get("guild_name", "Unknown")
-    recent_msgs   = guild_data.get("recent_messages", [])
-    msg_count     = guild_data.get("message_count", 0)
-    still_present = guild_data.get("still_in_server", False)
-    username      = guild_data.get("username", "Unknown")
+def _build_selfbot_messages_embed(gd: dict) -> discord.Embed:
+    guild_name    = gd.get("guild_name", "Unknown")
+    recent_msgs   = gd.get("recent_messages", [])
+    msg_count     = gd.get("message_count", 0)
+    still_present = gd.get("still_in_server") is True
+    username      = gd.get("username", "Unknown")
+    guild_id      = gd.get("guild_id", "?")
 
     embed = discord.Embed(
-        title=f"💬 Messages — {guild_name}",
+        title=f"Messages — {guild_name}",
         color=0x57F287 if still_present else 0xFFA500,
     )
-    embed.add_field(name="Username",       value=f"`{username}`",  inline=True)
-    embed.add_field(name="Total Messages", value=f"`{msg_count}`", inline=True)
-    embed.add_field(name="Status",         value="✅ Active" if still_present else "⚠️ Previous", inline=True)
+    embed.add_field(name="User",     value=f"`{username}`",                            inline=True)
+    embed.add_field(name="Total",    value=f"`{msg_count}`",                           inline=True)
+    embed.add_field(name="Status",   value="Current" if still_present else "Previous", inline=True)
+    embed.add_field(name="Guild ID", value=f"`{guild_id}`",                            inline=False)
 
     if recent_msgs:
         lines = []
@@ -127,28 +155,74 @@ def _build_selfbot_messages_embed(guild_data: dict) -> discord.Embed:
             lines.append(f"`#{channel}` [{sent_at}]: {content}")
         embed.add_field(name="Recent Messages", value="\n".join(lines), inline=False)
     else:
-        embed.add_field(name="Recent Messages", value="*No messages found*", inline=False)
+        embed.add_field(name="Recent Messages", value="*No messages recorded*", inline=False)
+
+    return embed
+
+
+def _build_scraped_section_embed(agg: AggregateResult) -> discord.Embed:
+    guilds = getattr(agg, "selfbot_guilds", []) or []
+    active = getattr(agg, "selfbot_active_guilds", []) or []
+    prev   = getattr(agg, "selfbot_prev_guilds", []) or []
+
+    embed = discord.Embed(title="Scraped Server Presence", color=0x5865F2)
+    embed.add_field(
+        name="Summary",
+        value=(
+            f"Current: **{len(active)}** server(s)\n"
+            f"Previous: **{len(prev)}** server(s)\n"
+            f"Total: **{len(guilds)}**"
+        ),
+        inline=False,
+    )
+
+    if active:
+        lines = []
+        for g in active[:10]:
+            name  = g.get("guild_name", "Unknown")
+            gid   = g.get("guild_id", "?")
+            roles = g.get("roles", [])
+            # Show first 2 role names if available
+            rnames = []
+            for r in roles[:2]:
+                rnames.append(r.get("name", str(r)) if isinstance(r, dict) else str(r))
+            rstr = f" — {', '.join(rnames)}" if rnames else ""
+            lines.append(f"**{name}** (`{gid}`){rstr}")
+        embed.add_field(name=f"Current Servers ({len(active)})", value="\n".join(lines), inline=False)
+
+    if prev:
+        lines = []
+        for g in prev[:10]:
+            name = g.get("guild_name", "Unknown")
+            gid  = g.get("guild_id", "?")
+            lines.append(f"**{name}** (`{gid}`)")
+        embed.add_field(name=f"Previous Servers ({len(prev)})", value="\n".join(lines), inline=False)
+
+    if not guilds:
+        embed.description = "*Not found in any scraped server.*"
+
+    embed.set_footer(text="Use Roles / Messages buttons for per-server details.")
     return embed
 
 
 # ─────────────────────────────────────────────
-# Selfbot dropdowns
+# Selfbot dropdowns — Roles
 # ─────────────────────────────────────────────
 
 class _SelfbotRolesSelect(discord.ui.Select):
-    def __init__(self, guilds: list, invoker_id: int):
-        self.invoker_id = invoker_id
-        self._guilds_map = {g.get("guild_id", str(i)): g for i, g in enumerate(guilds)}
+    def __init__(self, guilds: list, invoker_id: int, row: int = 2):
+        self.invoker_id  = invoker_id
+        self._guilds_map = {str(g.get("guild_id", i)): g for i, g in enumerate(guilds)}
         options = []
         for g in guilds[:25]:
-            label = g.get("guild_name", "Unknown")[:100]
-            value = g.get("guild_id", "0")[:100]
-            roles = g.get("roles", [])
-            desc  = (", ".join(roles[:3]) if roles else "No roles")[:100]
+            label         = g.get("guild_name", "Unknown")[:100]
+            value         = str(g.get("guild_id", "0"))[:100]
+            still_present = g.get("still_in_server") is True
+            desc          = "Current" if still_present else "Previous"
             options.append(discord.SelectOption(label=label, value=value, description=desc))
         if not options:
             options.append(discord.SelectOption(label="No servers found", value="none"))
-        super().__init__(placeholder="📋 Roles — pick a server", options=options, row=2)
+        super().__init__(placeholder="Roles — pick a server", options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.invoker_id:
@@ -161,19 +235,25 @@ class _SelfbotRolesSelect(discord.ui.Select):
         )
 
 
+# ─────────────────────────────────────────────
+# Selfbot dropdowns — Messages
+# ─────────────────────────────────────────────
+
 class _SelfbotMessagesSelect(discord.ui.Select):
-    def __init__(self, guilds: list, invoker_id: int):
-        self.invoker_id = invoker_id
-        self._guilds_map = {g.get("guild_id", str(i)): g for i, g in enumerate(guilds)}
+    def __init__(self, guilds: list, invoker_id: int, row: int = 3):
+        self.invoker_id  = invoker_id
+        self._guilds_map = {str(g.get("guild_id", i)): g for i, g in enumerate(guilds)}
         options = []
         for g in guilds[:25]:
-            label = g.get("guild_name", "Unknown")[:100]
-            value = g.get("guild_id", "0")[:100]
-            desc  = f"{g.get('message_count', 0)} message(s) found"
+            label     = g.get("guild_name", "Unknown")[:100]
+            value     = str(g.get("guild_id", "0"))[:100]
+            msg_count = g.get("message_count", 0)
+            still     = g.get("still_in_server") is True
+            desc      = f"{'Current' if still else 'Previous'} — {msg_count} msg(s)"
             options.append(discord.SelectOption(label=label, value=value, description=desc[:100]))
         if not options:
             options.append(discord.SelectOption(label="No servers found", value="none"))
-        super().__init__(placeholder="💬 Messages — pick a server", options=options, row=3)
+        super().__init__(placeholder="Messages — pick a server", options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.invoker_id:
@@ -241,7 +321,7 @@ class EventsCog(commands.Cog):
         except discord.HTTPException: pass
 
 
-# ── Nav buttons ───────────────────────────────────────────────────────────────
+# ── Nav buttons ────────────────────────────────────────────────────────────────
 
 class _NavBtn(discord.ui.Button):
     def __init__(self, label, invoker_id, view_ref, delta, row):
@@ -282,7 +362,9 @@ class CheckCog(commands.Cog):
                      extra: bool = False, private: bool = True):
         await interaction.response.defer(ephemeral=private, thinking=True)
         disabled = self.bot.storage.get_disabled_apis()
-        agg = await self.bot.detection.lookup(user_id=user_id, roblox_only=roblox, disabled_apis=disabled)
+        agg = await self.bot.detection.lookup(
+            user_id=user_id, roblox_only=roblox, disabled_apis=disabled
+        )
 
         if agg.is_empty() and agg.errors and not config.MOCK_MODE:
             warn = discord.Embed(title="Lookup Incomplete")
@@ -308,17 +390,20 @@ class _CheckView(discord.ui.View):
         self.section    = "overview"
         self.page       = 0
 
+        # Row 0 — section select
         self.add_item(_CheckSelect(self))
+
+        # Row 1 — nav
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
         self.add_item(self._prev); self.add_item(self._lbl); self.add_item(self._next)
 
-        # ── Selfbot dropdowns — only attach if selfbot returned data ──
+        # Rows 2 & 3 — selfbot dropdowns (Discord mode only, data must exist)
         selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not roblox:
-            self.add_item(_SelfbotRolesSelect(selfbot_guilds, invoker_id))
-            self.add_item(_SelfbotMessagesSelect(selfbot_guilds, invoker_id))
+            self.add_item(_SelfbotRolesSelect(selfbot_guilds,    invoker_id, row=2))
+            self.add_item(_SelfbotMessagesSelect(selfbot_guilds, invoker_id, row=3))
 
         self.refresh_nav()
 
@@ -343,52 +428,8 @@ class _CheckView(discord.ui.View):
         if s == "accounts":  return build_check_accounts(self.agg)
         if s == "profile":   return build_check_profile(self.agg)
         if s == "details":   return build_check_details(self.agg)
-        if s == "scraped":   return self._build_scraped_section()
+        if s == "scraped":   return {"embeds": [_build_scraped_section_embed(self.agg)]}
         return build_check_overview(self.user, self.agg, self.extra)
-
-    def _build_scraped_section(self) -> dict:
-        """Builds the scraped servers summary card for the main embed area."""
-        guilds  = getattr(self.agg, "selfbot_guilds", []) or []
-        active  = getattr(self.agg, "selfbot_active_guilds", []) or []
-        prev    = getattr(self.agg, "selfbot_prev_guilds", []) or []
-
-        embed = discord.Embed(
-            title="🖥️ Scraped Server Presence",
-            color=0x5865F2,
-        )
-        embed.add_field(
-            name="Summary",
-            value=(
-                f"✅ Active in **{len(active)}** server(s)\n"
-                f"⚠️ Previous in **{len(prev)}** server(s)\n"
-                f"📊 Total found: **{len(guilds)}**"
-            ),
-            inline=False,
-        )
-
-        if active:
-            lines = []
-            for g in active[:10]:
-                name  = g.get("guild_name", "Unknown")
-                gid   = g.get("guild_id", "?")
-                roles = g.get("roles", [])
-                rstr  = f" — roles: {', '.join(roles[:2])}" if roles else ""
-                lines.append(f"✅ **{name}** (`{gid}`){rstr}")
-            embed.add_field(name="Active Servers", value="\n".join(lines), inline=False)
-
-        if prev:
-            lines = []
-            for g in prev[:10]:
-                name = g.get("guild_name", "Unknown")
-                gid  = g.get("guild_id", "?")
-                lines.append(f"⚠️ **{name}** (`{gid}`)")
-            embed.add_field(name="Previous Servers", value="\n".join(lines), inline=False)
-
-        if not guilds:
-            embed.description = "*Not found in any scraped server.*"
-
-        embed.set_footer(text="Use the dropdowns below to view roles and messages per server.")
-        return {"embeds": [embed]}
 
     async def do_edit(self, interaction):
         await edit_v2(interaction, self.build(), view=self)
@@ -396,8 +437,8 @@ class _CheckView(discord.ui.View):
 
 class _CheckSelect(discord.ui.Select):
     def __init__(self, view_ref):
-        roblox         = getattr(view_ref, "roblox", False)
-        has_selfbot    = bool(getattr(view_ref.agg, "selfbot_guilds", None))
+        roblox      = getattr(view_ref, "roblox", False)
+        has_selfbot = bool(getattr(view_ref.agg, "selfbot_guilds", None))
 
         if roblox:
             options = [
@@ -416,13 +457,13 @@ class _CheckSelect(discord.ui.Select):
                 discord.SelectOption(label="Details",   value="details"),
             ]
             if has_selfbot:
-                options.append(
-                    discord.SelectOption(
-                        label="Scraped Servers",
-                        value="scraped",
-                        description="Servers found via selfbot scrape",
-                    )
-                )
+                active = len(getattr(view_ref.agg, "selfbot_active_guilds", []) or [])
+                prev   = len(getattr(view_ref.agg, "selfbot_prev_guilds",   []) or [])
+                options.append(discord.SelectOption(
+                    label="Scraped Servers",
+                    value="scraped",
+                    description=f"Current: {active} | Previous: {prev}",
+                ))
 
         super().__init__(placeholder="Select section", options=options, row=0)
         self.view_ref = view_ref
@@ -454,7 +495,9 @@ class LookupCog(commands.Cog):
                       extra: bool = False, private: bool = True):
         await interaction.response.defer(ephemeral=private, thinking=True)
         disabled = self.bot.storage.get_disabled_apis()
-        agg = await self.bot.detection.lookup(user_id=user_id, roblox_only=roblox, disabled_apis=disabled)
+        agg = await self.bot.detection.lookup(
+            user_id=user_id, roblox_only=roblox, disabled_apis=disabled
+        )
 
         if agg.is_empty() and agg.errors and not config.MOCK_MODE:
             warn = discord.Embed(title="Lookup Incomplete")
@@ -464,7 +507,7 @@ class LookupCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
-        view = _LookupView(user, agg, extra, roblox, interaction.user.id)
+        view  = _LookupView(user, agg, extra, roblox, interaction.user.id)
         cards = view.build()
         await send_v2(interaction, *cards, view=view, ephemeral=private)
         await send_command_log(self.bot, interaction, "search2",
@@ -485,11 +528,10 @@ class _LookupView(discord.ui.View):
         self._next = _NavBtn("▶", invoker_id, self, +1, row=0)
         self.add_item(self._prev); self.add_item(self._lbl); self.add_item(self._next)
 
-        # ── Selfbot dropdowns on search2 too ──
         selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not roblox:
-            self.add_item(_SelfbotRolesSelect(selfbot_guilds, invoker_id))
-            self.add_item(_SelfbotMessagesSelect(selfbot_guilds, invoker_id))
+            self.add_item(_SelfbotRolesSelect(selfbot_guilds,    invoker_id, row=1))
+            self.add_item(_SelfbotMessagesSelect(selfbot_guilds, invoker_id, row=2))
 
         self.refresh_nav()
 
