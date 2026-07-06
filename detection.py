@@ -12,8 +12,7 @@ from models import AggregateResult
 
 log = logging.getLogger("bot.detection")
 
-# Rotector flag types that are actionable (safe to treat as flagged)
-ROTECTOR_ACTIONABLE = {1, 2}  # Flagged, Confirmed
+ROTECTOR_ACTIONABLE = {1, 2}
 
 
 async def _get(session, url, headers=None, params=None, timeout=10) -> dict:
@@ -47,14 +46,12 @@ async def _fetch_tase(session, discord_id: str) -> dict:
                       {"Authorization": config.TASE_API_KEY})
 
 async def _fetch_bloxycleaner_erp(session, discord_id: str) -> dict:
-    """GET /p/api/v1/erp/lookup — ERP (condo) database."""
     token = config.BLOXYCLEANER_API_KEY or "pub-freeusage"
     data  = await _get(session, f"{config.BLOXYCLEANER_BASE}/p/api/v1/erp/lookup",
                        {"Authorization": token}, {"userid": discord_id}, timeout=20)
     return data.get("users", {}).get(str(discord_id), {})
 
 async def _fetch_bloxycleaner_exp(session, discord_id: str) -> dict:
-    """GET /p/api/v1/exp/lookup — Exploit database."""
     token = config.BLOXYCLEANER_API_KEY or "pub-freeusage"
     data  = await _get(session, f"{config.BLOXYCLEANER_BASE}/p/api/v1/exp/lookup",
                        {"Authorization": token}, {"userid": discord_id}, timeout=20)
@@ -66,13 +63,11 @@ async def _fetch_robloxwatcher(session, user_id: str) -> dict:
         params={"id": user_id, "key": config.ROBLOXWATCHER_API_KEY})
 
 async def _fetch_rotector_discord(session, discord_id: str) -> dict:
-    """GET /v1/lookup/discord/user/{id} — returns servers, connections, altAccounts."""
     return await _get(session,
         f"{config.ROTECTOR_API_BASE}/v1/lookup/discord/user/{discord_id}",
         {"Authorization": f"Bearer {config.ROTECTOR_API_KEY}"})
 
 async def _fetch_rotector_roblox(session, roblox_id: str) -> dict:
-    """GET /v1/lookup/roblox/user/{id} — returns flagType, confidence, reasons, etc."""
     return await _get(session,
         f"{config.ROTECTOR_API_BASE}/v1/lookup/roblox/user/{roblox_id}",
         {"Authorization": f"Bearer {config.ROTECTOR_API_KEY}"})
@@ -91,6 +86,42 @@ async def _fetch_roblox_username(session, user_id: str) -> Optional[str]:
     data = await _get(session, f"https://users.roblox.com/v1/users/{user_id}")
     return data.get("name") or data.get("displayName")
 
+# ─────────────────────────────────────────────
+# Selfbot bridge — POST /check on the selfbot's HTTP API
+# ─────────────────────────────────────────────
+
+async def _fetch_selfbot(session, discord_id: str) -> dict:
+    """
+    Queries the selfbot's /check endpoint.
+    Returns the full guild report or {} on any failure.
+    Config keys needed:
+        SELFBOT_API_URL     — e.g. https://self-bot-production-adc8.up.railway.app
+        SELFBOT_API_KEY     — shared INTERNAL_API_KEY set in the selfbot Railway service
+    """
+    url = getattr(config, "SELFBOT_API_URL", "") or ""
+    key = getattr(config, "SELFBOT_API_KEY", "") or ""
+    if not url or not key:
+        return {}
+    try:
+        async with session.post(
+            f"{url.rstrip('/')}/check",
+            json={"api_key": key, "user_id": int(discord_id)},
+            timeout=aiohttp.ClientTimeout(total=180, connect=15, sock_read=120),
+        ) as r:
+            if r.status == 200:
+                return await r.json()
+            if r.status == 401:
+                log.warning("[Selfbot] API key rejected")
+            else:
+                log.warning("[Selfbot] HTTP %s", r.status)
+            return {}
+    except asyncio.TimeoutError:
+        log.warning("[Selfbot] Timed out for user %s", discord_id)
+        return {}
+    except Exception as exc:
+        log.error("[Selfbot] Error: %s", exc)
+        return {}
+
 
 def _safe_ts(val) -> Optional[int]:
     if val is None: return None
@@ -99,16 +130,15 @@ def _safe_ts(val) -> Optional[int]:
 
 
 def _parse_rotector_reasons(reasons_raw) -> list[str]:
-    """Convert reasons dict {reason_key: {message, confidence, evidence}} to list of strings."""
     if not reasons_raw or not isinstance(reasons_raw, dict):
         return []
     lines = []
     for key, val in reasons_raw.items():
         if isinstance(val, dict):
-            msg = val.get("message", "")
+            msg  = val.get("message", "")
             conf = val.get("confidence")
             line = f"{key}"
-            if msg: line += f": {msg}"
+            if msg:  line += f": {msg}"
             if conf is not None: line += f" ({conf:.0%})"
             lines.append(line)
         else:
@@ -135,10 +165,10 @@ def _extract_groups_from_reasons(reasons_raw) -> list[dict]:
 
 def _merge_server(by_key: dict, name_index: dict, server: dict, source: str) -> None:
     if not server: return
-    sid  = server.get("id") or server.get("serverId")
-    name = server.get("name") or server.get("serverName") or "Unknown"
-    nlow = name.lower()
-    key  = str(sid) if sid else name_index.get(nlow, nlow)
+    sid   = server.get("id") or server.get("serverId")
+    name  = server.get("name") or server.get("serverName") or "Unknown"
+    nlow  = name.lower()
+    key   = str(sid) if sid else name_index.get(nlow, nlow)
     entry = by_key.setdefault(key, {"id": sid, "name": name, "sources": [], "last_seen": None})
     if sid and entry.get("id") is None:
         entry["id"] = sid
@@ -200,7 +230,6 @@ class DetectionService:
             disabled_apis = {str(s).upper() for s in cfg}
 
         if roblox_only:
-            # Roblox mode: Rotector (roblox endpoint) + Moco-co + username
             agg  = AggregateResult(discord_id="", roblox_id=int(user_id))
             jobs = []
             jobs.append(("roblox_username", _fetch_roblox_username(sess, user_id)))
@@ -212,7 +241,6 @@ class DetectionService:
                 checked.append("Moco-co")
                 jobs.append(("moco", _fetch_moco(sess, user_id)))
         else:
-            # Discord mode: TASE, BloxyCleaner, RobloxWatcher, Rotector (discord endpoint), Moco-co
             agg  = AggregateResult(discord_id=user_id)
             jobs = []
             if "TASE" not in disabled_apis:
@@ -231,6 +259,13 @@ class DetectionService:
             if "MOCO" not in disabled_apis:
                 checked.append("Moco-co")
                 jobs.append(("moco", _fetch_moco(sess, user_id)))
+            # ── Selfbot — always runs in Discord mode if configured ──
+            if "SELFBOT" not in disabled_apis:
+                selfbot_url = getattr(config, "SELFBOT_API_URL", "") or ""
+                selfbot_key = getattr(config, "SELFBOT_API_KEY", "") or ""
+                if selfbot_url and selfbot_key:
+                    checked.append("Selfbot")
+                    jobs.append(("selfbot", _fetch_selfbot(sess, user_id)))
 
         results = await asyncio.gather(*[j[1] for j in jobs], return_exceptions=True)
 
@@ -273,18 +308,15 @@ class DetectionService:
                     agg.sources_flagged.append("RobloxWatcher")
 
             elif key == "rotector_discord" and res:
-                # Response: {success, data: {id, servers[], connections[], altAccounts[]}}
-                data = res.get("data") or {}
-                servers     = data.get("servers", [])
-                connections = data.get("connections", [])
+                data         = res.get("data") or {}
+                servers      = data.get("servers", [])
+                connections  = data.get("connections", [])
                 alt_accounts = data.get("altAccounts", [])
-                agg.rotector_discord_servers  = servers
-                agg.rotector_connections      = connections
-                agg.rotector_alt_accounts     = alt_accounts
-                # Flagged if they have any condo servers tracked
+                agg.rotector_discord_servers = servers
+                agg.rotector_connections     = connections
+                agg.rotector_alt_accounts    = alt_accounts
                 if servers:
                     agg.sources_flagged.append("Rotector")
-                # Also store linked Roblox usernames for display
                 if connections:
                     agg.rotector_roblox_links = [
                         f"{c.get('robloxUsername', '?')} (`{c.get('robloxUserId', '?')}`)"
@@ -292,8 +324,7 @@ class DetectionService:
                     ]
 
             elif key == "rotector_roblox" and res:
-                # Response: {success, data: {id, flagType, category, confidence, reasons{}, ...}}
-                data = res.get("data") or {}
+                data       = res.get("data") or {}
                 flag_type  = data.get("flagType")
                 confidence = data.get("confidence")
                 reasons    = data.get("reasons", {})
@@ -304,7 +335,6 @@ class DetectionService:
                 agg.rotector_is_locked       = data.get("isLocked", False)
                 agg.rotector_flagged_friends = data.get("friends") or data.get("flaggedFriends") or []
                 agg.rotector_flagged_groups  = data.get("groups")  or data.get("flaggedGroups")  or _extract_groups_from_reasons(reasons)
-                # Only actionable flag types count as flagged
                 if flag_type in ROTECTOR_ACTIONABLE:
                     agg.sources_flagged.append("Rotector")
 
@@ -320,7 +350,20 @@ class DetectionService:
                 if agg.moco_group_count:
                     agg.sources_flagged.append("Moco-co")
 
-        # RoCleaner — Discord mode only (irrelevant for Roblox IDs)
+            # ── Selfbot result parsing ──
+            elif key == "selfbot" and res:
+                guilds = res.get("guilds", [])
+                if guilds:
+                    agg.selfbot_guilds        = guilds
+                    agg.selfbot_active_guilds = [g for g in guilds if g.get("still_in_server")]
+                    agg.selfbot_prev_guilds   = [g for g in guilds if not g.get("still_in_server")]
+                    agg.sources_flagged.append("Selfbot")
+                else:
+                    agg.selfbot_guilds        = []
+                    agg.selfbot_active_guilds = []
+                    agg.selfbot_prev_guilds   = []
+
+        # RoCleaner — Discord mode only
         if not roblox_only and self._storage and "ROCLEANER" not in disabled_apis:
             checked.append("RoCleaner")
             servers = self._storage.get_rocleaner_servers(user_id)
