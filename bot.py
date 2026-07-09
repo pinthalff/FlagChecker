@@ -1,5 +1,9 @@
+# bot.py
+
 from __future__ import annotations
+
 import asyncio, logging, os, sys
+
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -8,8 +12,7 @@ import discord
 from discord.ext import commands
 
 import config
-from storage import BotStorage
-from database import setup_databases, DatabaseLayer
+from FlagCheckerDB import FlagCheckerDB
 from detection import DetectionService
 from renderer import CardRenderer
 from embeds import build_bot_ready_embed, build_status_control_embed
@@ -25,6 +28,7 @@ logging.basicConfig(
         logging.FileHandler("bot.log", encoding="utf-8"),
     ],
 )
+
 log = logging.getLogger("bot")
 
 _STATUS_MAP = {
@@ -48,19 +52,24 @@ class StatusControlView(discord.ui.View):
             ch = interaction.client.get_channel(int(config.LOG_CHANNEL_ID))
             if ch:
                 e = discord.Embed(title="Bot Status Changed")
-                e.description = (f"Status changed to **{label}**\n"
-                                 f"Changed by: {interaction.user} (`{interaction.user.id}`)")
+                e.description = (
+                    f"Status changed to **{label}**\n"
+                    f"Changed by: {interaction.user} (`{interaction.user.id}`)"
+                )
                 e.timestamp = datetime.now(timezone.utc)
                 try: await ch.send(embed=e)
                 except Exception: pass
 
     @discord.ui.button(label="Online",    style=discord.ButtonStyle.success,   custom_id="status_online")
     async def btn_online(self, i, _):    await self._set(i, "online")
-    @discord.ui.button(label="Idle",      style=discord.ButtonStyle.secondary,  custom_id="status_idle")
+
+    @discord.ui.button(label="Idle",      style=discord.ButtonStyle.secondary, custom_id="status_idle")
     async def btn_idle(self, i, _):      await self._set(i, "idle")
-    @discord.ui.button(label="DND",       style=discord.ButtonStyle.danger,     custom_id="status_dnd")
+
+    @discord.ui.button(label="DND",       style=discord.ButtonStyle.danger,    custom_id="status_dnd")
     async def btn_dnd(self, i, _):       await self._set(i, "dnd")
-    @discord.ui.button(label="Invisible", style=discord.ButtonStyle.secondary,  custom_id="status_invisible")
+
+    @discord.ui.button(label="Invisible", style=discord.ButtonStyle.secondary, custom_id="status_invisible")
     async def btn_invisible(self, i, _): await self._set(i, "invisible")
 
 
@@ -69,7 +78,9 @@ class DetectorBot(commands.Bot):
         intents         = discord.Intents.default()
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        self.storage   = BotStorage()
+
+        # ── FlagCheckerDB replaces both storage.py and database.py ──
+        self.storage   = FlagCheckerDB()
         self.detection = DetectionService(self.storage)
         self.renderer  = CardRenderer()
 
@@ -77,17 +88,10 @@ class DetectorBot(commands.Bot):
         self.add_view(StatusControlView())
         await self.renderer._ensure_started()
 
-        # Connect databases (MySQL + MongoDB)
-        try:
-            db_status = setup_databases()
-            if db_status.get("mysql") and db_status.get("mongodb"):
-                db = DatabaseLayer()
-                self.storage.set_database(db)
-                log.info("Database layer connected (MySQL + MongoDB)")
-            else:
-                log.warning("Database partially connected: %s", db_status)
-        except Exception as exc:
-            log.error("Database setup failed: %s", exc)
+        log.info(
+            "[DB] FlagDB: OK | SelfDB: %s",
+            "ON" if self.storage.selfbot_enabled() else "OFF"
+        )
 
         for cog in [EventsCog, DashboardCog, CheckCog, LookupCog]:
             await self.add_cog(cog(self))
@@ -101,14 +105,14 @@ class DetectorBot(commands.Bot):
 
         self.tree.interaction_check = _mode_check
 
-        # Always sync globally so commands work in DMs and every server
+        # Global sync
         try:
             synced = await self.tree.sync()
             log.info("Synced %d commands globally", len(synced))
         except Exception as exc:
             log.error("Global sync failed: %s", exc)
 
-        # Also sync to dev guild if set (instant update for testing)
+        # Dev guild sync if set
         if config.DEV_GUILD_ID:
             try:
                 guild  = discord.Object(id=int(config.DEV_GUILD_ID))
@@ -122,20 +126,26 @@ class DetectorBot(commands.Bot):
         log.info("Ready — %s | MOCK_MODE=%s", self.user, config.MOCK_MODE)
         await self.change_presence(
             status=discord.Status.online,
-            activity=discord.Activity(type=discord.ActivityType.watching,
-                                      name="FlagChecker | /search | /search2"))
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="FlagChecker | /search | /search2"
+            )
+        )
         if config.STATUS_CHANNEL_ID:
             ch = self.get_channel(int(config.STATUS_CHANNEL_ID))
             if ch:
                 try:
                     await ch.send(embed=build_bot_ready_embed(self))
-                    await ch.send(embed=build_status_control_embed("Online"),
-                                  view=StatusControlView())
+                    await ch.send(
+                        embed=build_status_control_embed("Online"),
+                        view=StatusControlView()
+                    )
                 except discord.HTTPException: pass
 
     async def close(self) -> None:
         await self.renderer.close()
         await self.detection.close()
+        self.storage.close()
         await super().close()
 
     @commands.command(name="sync", hidden=True)
@@ -157,6 +167,7 @@ async def main() -> None:
     async with DetectorBot() as bot:
         await bot.start(config.DISCORD_TOKEN)
 
+
 if __name__ == "__main__":
-    try:        asyncio.run(main())
+    try: asyncio.run(main())
     except KeyboardInterrupt: log.info("Shutting down.")
