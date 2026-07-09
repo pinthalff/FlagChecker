@@ -88,35 +88,21 @@ async def _fetch_roblox_username(session, user_id: str) -> Optional[str]:
 
 
 async def _fetch_selfbot(session, discord_id: str) -> dict:
-    """
-    Queries selfbot /check endpoint.
-    Controlled by SELFBOT_ENABLED in config/env.
-    deep=True so previous members are detected.
-    """
     url     = getattr(config, "SELFBOT_API_URL", "") or ""
     key     = getattr(config, "SELFBOT_API_KEY", "") or ""
-    enabled = getattr(config, "SELFBOT_ENABLED", True)
-
+    enabled = getattr(config, "SELFBOT_ENABLED", False)
     if not url or not key or not enabled:
         return {}
-
     try:
         timeout = aiohttp.ClientTimeout(total=480, connect=15, sock_read=470)
         async with session.post(
             f"{url.rstrip('/')}/check",
-            json={
-                "api_key": key,
-                "user_id": int(discord_id),
-                "deep":    True,
-            },
+            json={"api_key": key, "user_id": int(discord_id), "deep": True},
             timeout=timeout,
         ) as r:
             if r.status == 200:
                 return await r.json()
-            if r.status == 401:
-                log.warning("[Selfbot] API key rejected")
-            else:
-                log.warning("[Selfbot] HTTP %s", r.status)
+            log.warning("[Selfbot] HTTP %s", r.status)
             return {}
     except asyncio.TimeoutError:
         log.warning("[Selfbot] Timed out for user %s", discord_id)
@@ -262,11 +248,10 @@ class DetectionService:
             if "MOCO" not in disabled_apis:
                 checked.append("Moco-co")
                 jobs.append(("moco", _fetch_moco(sess, user_id)))
-            # ── Selfbot — controlled by SELFBOT_ENABLED ──
             if "SELFBOT" not in disabled_apis:
                 selfbot_url     = getattr(config, "SELFBOT_API_URL", "") or ""
                 selfbot_key     = getattr(config, "SELFBOT_API_KEY", "") or ""
-                selfbot_enabled = getattr(config, "SELFBOT_ENABLED", True)
+                selfbot_enabled = getattr(config, "SELFBOT_ENABLED", False)
                 if selfbot_url and selfbot_key and selfbot_enabled:
                     checked.append("Selfbot")
                     jobs.append(("selfbot", _fetch_selfbot(sess, user_id)))
@@ -362,14 +347,6 @@ class DetectionService:
                     agg.selfbot_prev_guilds   = [g for g in guilds if g.get("still_in_server") is not True]
                     if "Selfbot" not in agg.sources_flagged:
                         agg.sources_flagged.append("Selfbot")
-                    log.info(
-                        "[Selfbot] user %s — active: %d, previous: %d",
-                        user_id, len(agg.selfbot_active_guilds), len(agg.selfbot_prev_guilds)
-                    )
-                else:
-                    agg.selfbot_guilds        = []
-                    agg.selfbot_active_guilds = []
-                    agg.selfbot_prev_guilds   = []
 
         if not roblox_only and self._storage and "ROCLEANER" not in disabled_apis:
             checked.append("RoCleaner")
@@ -378,6 +355,25 @@ class DetectionService:
                 agg.rocleaner_servers = servers
                 agg.rocleaner_flagged = True
                 agg.sources_flagged.append("RoCleaner")
+
+        # ── Selfbot DB fallback ──
+        # Always reads seen_users from DB regardless of SELFBOT_ENABLED
+        # So even when selfbot is banned, scraped data still shows up
+        if not roblox_only and not agg.selfbot_guilds and self._storage:
+            if hasattr(self._storage, "build_selfbot_report"):
+                try:
+                    report = self._storage.build_selfbot_report(int(user_id))
+                    guilds = report.get("guilds", [])
+                    if guilds:
+                        agg.selfbot_guilds        = guilds
+                        agg.selfbot_active_guilds = [g for g in guilds if g.get("still_in_server") is True]
+                        agg.selfbot_prev_guilds   = [g for g in guilds if g.get("still_in_server") is not True]
+                        if "Selfbot" not in agg.sources_flagged:
+                            agg.sources_flagged.append("Selfbot")
+                        log.info("[Selfbot DB] user %s — active: %d, previous: %d",
+                            user_id, len(agg.selfbot_active_guilds), len(agg.selfbot_prev_guilds))
+                except Exception as e:
+                    log.error("[Selfbot DB] %s", e)
 
         agg.errors          = errors
         agg.sources_checked = checked
