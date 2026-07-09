@@ -89,13 +89,17 @@ async def _fetch_roblox_username(session, user_id: str) -> Optional[str]:
 
 async def _fetch_selfbot(session, discord_id: str) -> dict:
     """
-    Queries the selfbot /check endpoint with deep=True so previous
-    members (left/kicked/banned) are detected via message history + log scan.
+    Queries selfbot /check endpoint.
+    Controlled by SELFBOT_ENABLED in config/env.
+    deep=True so previous members are detected.
     """
-    url = getattr(config, "SELFBOT_API_URL", "") or ""
-    key = getattr(config, "SELFBOT_API_KEY", "") or ""
-    if not url or not key:
+    url     = getattr(config, "SELFBOT_API_URL", "") or ""
+    key     = getattr(config, "SELFBOT_API_KEY", "") or ""
+    enabled = getattr(config, "SELFBOT_ENABLED", True)
+
+    if not url or not key or not enabled:
         return {}
+
     try:
         timeout = aiohttp.ClientTimeout(total=480, connect=15, sock_read=470)
         async with session.post(
@@ -103,7 +107,7 @@ async def _fetch_selfbot(session, discord_id: str) -> dict:
             json={
                 "api_key": key,
                 "user_id": int(discord_id),
-                "deep":    True,  # catches left/kicked/banned members
+                "deep":    True,
             },
             timeout=timeout,
         ) as r:
@@ -258,10 +262,12 @@ class DetectionService:
             if "MOCO" not in disabled_apis:
                 checked.append("Moco-co")
                 jobs.append(("moco", _fetch_moco(sess, user_id)))
+            # ── Selfbot — controlled by SELFBOT_ENABLED ──
             if "SELFBOT" not in disabled_apis:
-                selfbot_url = getattr(config, "SELFBOT_API_URL", "") or ""
-                selfbot_key = getattr(config, "SELFBOT_API_KEY", "") or ""
-                if selfbot_url and selfbot_key:
+                selfbot_url     = getattr(config, "SELFBOT_API_URL", "") or ""
+                selfbot_key     = getattr(config, "SELFBOT_API_KEY", "") or ""
+                selfbot_enabled = getattr(config, "SELFBOT_ENABLED", True)
+                if selfbot_url and selfbot_key and selfbot_enabled:
                     checked.append("Selfbot")
                     jobs.append(("selfbot", _fetch_selfbot(sess, user_id)))
 
@@ -351,7 +357,6 @@ class DetectionService:
             elif key == "selfbot" and res:
                 guilds = res.get("guilds", [])
                 if guilds:
-                    # ── Correct split — still_in_server True = current, anything else = previous ──
                     agg.selfbot_guilds        = guilds
                     agg.selfbot_active_guilds = [g for g in guilds if g.get("still_in_server") is True]
                     agg.selfbot_prev_guilds   = [g for g in guilds if g.get("still_in_server") is not True]
