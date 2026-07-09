@@ -5,6 +5,10 @@
 
 # cogs.py
 
+# cogs.py — replace _CheckView and _LookupView
+
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -122,12 +126,12 @@ def _build_scraped_v2(agg: AggregateResult) -> dict:
         inner.append(c_sep())
         lines = []
         for g in active:
-            name  = g.get("guild_name", "Unknown")
-            gid   = g.get("guild_id", "?")
-            uname = g.get("username", "?")
-            roles = g.get("roles", [])
+            name   = g.get("guild_name", "Unknown")
+            gid    = g.get("guild_id", "?")
+            uname  = g.get("username", "?")
+            roles  = g.get("roles", [])
             rnames = [r.get("name", str(r)) if isinstance(r, dict) else str(r) for r in roles[:3]]
-            rstr  = f" — {', '.join(rnames)}" if rnames else ""
+            rstr   = f" — {', '.join(rnames)}" if rnames else ""
             lines.append(f"• **{name}** (`{gid}`) · `{uname}`{rstr}")
         inner.append(c_text("**Current Servers**\n" + "\n".join(lines)))
 
@@ -146,7 +150,7 @@ def _build_scraped_v2(agg: AggregateResult) -> dict:
         inner.append(c_text("*Not found in any scraped server.*"))
 
     inner.append(c_sep())
-    inner.append(c_text("-# Use the Roles / Messages dropdowns below for per-server details."))
+    inner.append(c_text("-# Use the Roles / Messages buttons for per-server details."))
 
     return c_container(*inner)
 
@@ -213,11 +217,11 @@ def _build_messages_v2(gd: dict) -> dict:
 
 
 # ─────────────────────────────────────────────
-# Selfbot dropdowns — appear only in scraped section
+# Selfbot dropdowns
 # ─────────────────────────────────────────────
 
 class _SelfbotRolesSelect(discord.ui.Select):
-    def __init__(self, guilds: list, invoker_id: int, row: int = 2):
+    def __init__(self, guilds: list, invoker_id: int, row: int = 0):
         self.invoker_id  = invoker_id
         self._guilds_map = {str(g.get("guild_id", str(i))): g for i, g in enumerate(guilds)}
         options = []
@@ -243,7 +247,7 @@ class _SelfbotRolesSelect(discord.ui.Select):
 
 
 class _SelfbotMessagesSelect(discord.ui.Select):
-    def __init__(self, guilds: list, invoker_id: int, row: int = 3):
+    def __init__(self, guilds: list, invoker_id: int, row: int = 0):
         self.invoker_id  = invoker_id
         self._guilds_map = {str(g.get("guild_id", str(i))): g for i, g in enumerate(guilds)}
         options = []
@@ -267,6 +271,48 @@ class _SelfbotMessagesSelect(discord.ui.Select):
         if not gd:
             return await interaction.response.send_message("No data.", ephemeral=True)
         await send_v2(interaction, _build_messages_v2(gd), ephemeral=True)
+
+
+# ─────────────────────────────────────────────
+# Roles + Messages buttons — sit on same row as nav
+# ─────────────────────────────────────────────
+
+class _RolesBtn(discord.ui.Button):
+    def __init__(self, guilds: list, invoker_id: int, row: int = 1):
+        super().__init__(label="Roles", style=discord.ButtonStyle.secondary, row=row)
+        self.guilds     = guilds
+        self.invoker_id = invoker_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.invoker_id:
+            return await interaction.response.send_message("Not your lookup.", ephemeral=True)
+        if not self.guilds:
+            return await interaction.response.send_message("No scraped data.", ephemeral=True)
+        if len(self.guilds) == 1:
+            await send_v2(interaction, _build_roles_v2(self.guilds[0]), ephemeral=True)
+        else:
+            view = discord.ui.View(timeout=120)
+            view.add_item(_SelfbotRolesSelect(self.guilds, self.invoker_id, row=0))
+            await interaction.response.send_message("Pick a server:", view=view, ephemeral=True)
+
+
+class _MessagesBtn(discord.ui.Button):
+    def __init__(self, guilds: list, invoker_id: int, row: int = 1):
+        super().__init__(label="Messages", style=discord.ButtonStyle.secondary, row=row)
+        self.guilds     = guilds
+        self.invoker_id = invoker_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.invoker_id:
+            return await interaction.response.send_message("Not your lookup.", ephemeral=True)
+        if not self.guilds:
+            return await interaction.response.send_message("No scraped data.", ephemeral=True)
+        if len(self.guilds) == 1:
+            await send_v2(interaction, _build_messages_v2(self.guilds[0]), ephemeral=True)
+        else:
+            view = discord.ui.View(timeout=120)
+            view.add_item(_SelfbotMessagesSelect(self.guilds, self.invoker_id, row=0))
+            await interaction.response.send_message("Pick a server:", view=view, ephemeral=True)
 
 
 # ── Events ─────────────────────────────────────────────────────────────────────
@@ -383,7 +429,6 @@ class CheckCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
-        # Save full detection result to DB
         if hasattr(self.bot.storage, "save_detection_result"):
             self.bot.storage.save_detection_result(
                 user_id, str(user) if user else f"User {user_id}", agg
@@ -400,23 +445,26 @@ class _CheckView(discord.ui.View):
     def __init__(self, user, agg, extra, roblox, invoker_id):
         super().__init__(timeout=300)
         self.user, self.agg, self.extra = user, agg, extra
-        self.roblox           = roblox
-        self.invoker_id       = invoker_id
-        self.section          = "overview"
-        self.page             = 0
-        self._roles_select    = None
-        self._messages_select = None
+        self.roblox     = roblox
+        self.invoker_id = invoker_id
+        self.section    = "overview"
+        self.page       = 0
 
         # Row 0 — section select
         self.add_item(_CheckSelect(self))
 
-        # Row 1 — nav buttons
+        # Row 1 — nav buttons + Roles + Messages right next to them
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
         self.add_item(self._prev)
         self.add_item(self._lbl)
         self.add_item(self._next)
+
+        selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
+        if selfbot_guilds and not roblox:
+            self.add_item(_RolesBtn(selfbot_guilds,    invoker_id, row=1))
+            self.add_item(_MessagesBtn(selfbot_guilds, invoker_id, row=1))
 
         self.refresh_nav()
 
@@ -432,26 +480,6 @@ class _CheckView(discord.ui.View):
         self._prev.disabled = self.page <= 0
         self._next.disabled = self.page >= mp - 1
         self._lbl.label     = f"{self.page+1}/{mp}"
-
-    def _add_selfbot_dropdowns(self):
-        """Add roles + messages dropdowns on rows 2 & 3 when scraped section is active."""
-        selfbot_guilds = getattr(self.agg, "selfbot_guilds", []) or []
-        if not selfbot_guilds or self.roblox:
-            return
-        self._remove_selfbot_dropdowns()
-        self._roles_select    = _SelfbotRolesSelect(selfbot_guilds, self.invoker_id, row=2)
-        self._messages_select = _SelfbotMessagesSelect(selfbot_guilds, self.invoker_id, row=3)
-        self.add_item(self._roles_select)
-        self.add_item(self._messages_select)
-
-    def _remove_selfbot_dropdowns(self):
-        """Remove roles + messages dropdowns when leaving scraped section."""
-        if self._roles_select and self._roles_select in self.children:
-            self.remove_item(self._roles_select)
-            self._roles_select = None
-        if self._messages_select and self._messages_select in self.children:
-            self.remove_item(self._messages_select)
-            self._messages_select = None
 
     def build(self) -> dict:
         s = self.section
@@ -502,21 +530,12 @@ class _CheckSelect(discord.ui.Select):
         self.view_ref = view_ref
 
     async def callback(self, interaction):
-        vr           = self.view_ref
+        vr = self.view_ref
         if interaction.user.id != vr.invoker_id:
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
-
-        prev_section = vr.section
-        vr.section   = self.values[0]
-        vr.page      = 0
+        vr.section = self.values[0]
+        vr.page    = 0
         vr.refresh_nav()
-
-        # Add dropdowns when entering scraped — remove when leaving
-        if vr.section == "scraped":
-            vr._add_selfbot_dropdowns()
-        elif prev_section == "scraped":
-            vr._remove_selfbot_dropdowns()
-
         await vr.do_edit(interaction)
 
 
@@ -551,7 +570,6 @@ class LookupCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
-        # Save full detection result to DB
         if hasattr(self.bot.storage, "save_detection_result"):
             self.bot.storage.save_detection_result(
                 user_id, str(user) if user else f"User {user_id}", agg
@@ -569,13 +587,11 @@ class _LookupView(discord.ui.View):
     def __init__(self, user, agg, extra, roblox, invoker_id):
         super().__init__(timeout=300)
         self.user, self.agg, self.extra = user, agg, extra
-        self.roblox           = roblox
-        self.invoker_id       = invoker_id
-        self.page             = 0
-        self._roles_select    = None
-        self._messages_select = None
+        self.roblox     = roblox
+        self.invoker_id = invoker_id
+        self.page       = 0
 
-        # Row 0 — nav
+        # Row 0 — nav + Roles + Messages right next to them
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=0)
         self._lbl  = _PageLabel(row=0)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=0)
@@ -583,13 +599,10 @@ class _LookupView(discord.ui.View):
         self.add_item(self._lbl)
         self.add_item(self._next)
 
-        # Rows 1 & 2 — selfbot dropdowns always visible in search2
         selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not roblox:
-            self._roles_select    = _SelfbotRolesSelect(selfbot_guilds, invoker_id, row=1)
-            self._messages_select = _SelfbotMessagesSelect(selfbot_guilds, invoker_id, row=2)
-            self.add_item(self._roles_select)
-            self.add_item(self._messages_select)
+            self.add_item(_RolesBtn(selfbot_guilds,    invoker_id, row=0))
+            self.add_item(_MessagesBtn(selfbot_guilds, invoker_id, row=0))
 
         self.refresh_nav()
 
