@@ -1,4 +1,7 @@
+# cogs.py
+
 from __future__ import annotations
+
 import json
 import logging
 import math
@@ -82,15 +85,13 @@ async def _fetch_user(bot, user_id: str):
 
 
 # ─────────────────────────────────────────────
-# Role formatter — dict {"id","name"} or plain string
+# Role formatter
 # ─────────────────────────────────────────────
 
 def _fmt_role(r) -> str:
     if isinstance(r, dict):
-        name = r.get("name", f"Unknown ({r.get('id', '?')})")
-        rid  = r.get("id", "?")
-        return f"`{name}` (`{rid}`)"
-    return f"`Unknown ({r})` (`{r}`)"
+        return r.get("name", f"Unknown ({r.get('id', '?')})")
+    return str(r)
 
 
 # ─────────────────────────────────────────────
@@ -98,11 +99,6 @@ def _fmt_role(r) -> str:
 # ─────────────────────────────────────────────
 
 def _build_scraped_v2(agg: AggregateResult) -> dict:
-    """
-    Builds the Scraped Servers section as a V2 container.
-    Shows all current + previous servers with guild IDs.
-    Uses same c_container/c_text/c_sep pattern as rest of v2.py.
-    """
     guilds = getattr(agg, "selfbot_guilds", []) or []
     active = getattr(agg, "selfbot_active_guilds", []) or []
     prev   = getattr(agg, "selfbot_prev_guilds",   []) or []
@@ -123,9 +119,7 @@ def _build_scraped_v2(agg: AggregateResult) -> dict:
             gid   = g.get("guild_id", "?")
             uname = g.get("username", "?")
             roles = g.get("roles", [])
-            rnames = []
-            for r in roles[:3]:
-                rnames.append(r.get("name", str(r)) if isinstance(r, dict) else str(r))
+            rnames = [r.get("name", str(r)) if isinstance(r, dict) else str(r) for r in roles[:3]]
             rstr = f" — {', '.join(rnames)}" if rnames else ""
             lines.append(f"• **{name}** (`{gid}`) · `{uname}`{rstr}")
         inner.append(c_text("**Current Servers**\n" + "\n".join(lines)))
@@ -151,64 +145,85 @@ def _build_scraped_v2(agg: AggregateResult) -> dict:
 
 
 def _build_roles_v2(gd: dict) -> dict:
-    """Roles for a single guild — V2 container format."""
+    """
+    Format:
+    Server Name
+    join date — Status
+
+    Server Name roles:
+    Role1
+    Role2
+    """
     guild_name    = gd.get("guild_name", "Unknown")
     roles         = gd.get("roles", [])
     still_present = gd.get("still_in_server") is True
     join_date     = gd.get("join_date", "unknown")
-    username      = gd.get("username", "Unknown")
-    guild_id      = gd.get("guild_id", "?")
     status        = "Current" if still_present else "Previous"
 
-    header = (
-        f"## Roles — {guild_name}\n"
-        f"User: `{username}` · Status: `{status}`\n"
-        f"Joined: `{join_date}` · Guild ID: `{guild_id}`"
-    )
+    # Clean join date to just date portion
+    try:
+        jd = join_date[:10] if join_date and join_date != "unknown" else "unknown"
+    except Exception:
+        jd = "unknown"
 
     if roles:
-        lines      = [_fmt_role(r) for r in roles]
-        chunk_size = 20
-        chunks     = [lines[i:i+chunk_size] for i in range(0, len(lines), chunk_size)]
-        inner      = [c_text(header), c_sep()]
-        for idx, chunk in enumerate(chunks):
-            label = f"**Roles ({len(roles)})**" if idx == 0 else "**Roles (cont.)**"
-            inner.append(c_text(label + "\n" + "\n".join(chunk)))
+        role_lines = "\n".join(_fmt_role(r) for r in roles)
     else:
-        inner = [c_text(header), c_sep(), c_text("*No roles recorded.*")]
+        role_lines = "No roles"
 
-    return c_container(*inner)
+    body = (
+        f"**{guild_name}**\n"
+        f"{jd} — {status}\n"
+        f"\n"
+        f"**{guild_name} roles:**\n"
+        f"{role_lines}"
+    )
+
+    return c_container(c_text(body))
 
 
 def _build_messages_v2(gd: dict) -> dict:
-    """Messages for a single guild — V2 container format."""
+    """
+    Format:
+    Server Name
+    join date — Status
+
+    [time]: message
+    [time]: message
+    """
     guild_name    = gd.get("guild_name", "Unknown")
     recent_msgs   = gd.get("recent_messages", [])
-    msg_count     = gd.get("message_count", 0)
     still_present = gd.get("still_in_server") is True
-    username      = gd.get("username", "Unknown")
-    guild_id      = gd.get("guild_id", "?")
+    join_date     = gd.get("join_date", "unknown")
     status        = "Current" if still_present else "Previous"
 
-    header = (
-        f"## Messages — {guild_name}\n"
-        f"User: `{username}` · Status: `{status}`\n"
-        f"Total Messages: `{msg_count}` · Guild ID: `{guild_id}`"
+    try:
+        jd = join_date[:10] if join_date and join_date != "unknown" else "unknown"
+    except Exception:
+        jd = "unknown"
+
+    lines = []
+    for m in recent_msgs[:25]:
+        content = (m.get("content") or "[no text]").strip()
+        sent_at = m.get("sent_at", "")
+        try:
+            dt       = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+            h12      = dt.hour % 12 or 12
+            time_str = f"{h12}:{dt.minute:02d}:{dt.second:02d}"
+        except Exception:
+            time_str = sent_at[:10] if sent_at else "?"
+        lines.append(f"[{time_str}]: {content}")
+
+    msg_block = "\n".join(lines) if lines else "No messages recorded"
+
+    body = (
+        f"**{guild_name}**\n"
+        f"{jd} — {status}\n"
+        f"\n"
+        f"{msg_block}"
     )
 
-    if recent_msgs:
-        lines = []
-        for m in recent_msgs[:25]:
-            content = (m.get("content") or "[no text]")[:80]
-            channel = m.get("channel", "unknown")
-            sent_at = (m.get("sent_at") or "?")[:10]
-            lines.append(f"`#{channel}` [{sent_at}]: {content}")
-        body  = "\n".join(lines)
-        inner = [c_text(header), c_sep(), c_text("**Recent Messages**\n" + body)]
-    else:
-        inner = [c_text(header), c_sep(), c_text("*No messages recorded.*")]
-
-    return c_container(*inner)
+    return c_container(c_text(body))
 
 
 # ─────────────────────────────────────────────
@@ -237,7 +252,6 @@ class _SelfbotRolesSelect(discord.ui.Select):
         gd = self._guilds_map.get(self.values[0])
         if not gd:
             return await interaction.response.send_message("No data.", ephemeral=True)
-        # Send as V2 component
         await send_v2(interaction, _build_roles_v2(gd), ephemeral=True)
 
 
@@ -394,16 +408,13 @@ class _CheckView(discord.ui.View):
         self.section    = "overview"
         self.page       = 0
 
-        # Row 0 — section select
         self.add_item(_CheckSelect(self))
 
-        # Row 1 — nav buttons
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
         self.add_item(self._prev); self.add_item(self._lbl); self.add_item(self._next)
 
-        # Rows 2 & 3 — selfbot dropdowns (Discord mode only, data must exist)
         selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not roblox:
             self.add_item(_SelfbotRolesSelect(selfbot_guilds,    invoker_id, row=2))
@@ -527,13 +538,11 @@ class _LookupView(discord.ui.View):
         self.invoker_id = invoker_id
         self.page       = 0
 
-        # Row 0 — nav
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=0)
         self._lbl  = _PageLabel(row=0)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=0)
         self.add_item(self._prev); self.add_item(self._lbl); self.add_item(self._next)
 
-        # Rows 1 & 2 — selfbot dropdowns
         selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not roblox:
             self.add_item(_SelfbotRolesSelect(selfbot_guilds,    invoker_id, row=1))
@@ -557,7 +566,6 @@ class _LookupView(discord.ui.View):
             build_lookup_accounts(self.user, self.agg),
             build_lookup_profile(self.user, self.agg),
         ]
-        # Append scraped section as extra card if data exists
         selfbot_guilds = getattr(self.agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not self.roblox:
             cards.append(_build_scraped_v2(self.agg))
