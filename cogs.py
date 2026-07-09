@@ -1,7 +1,11 @@
 # cogs.py
 
-from __future__ import annotations
+# cogs.py — replace _SelfbotRolesSelect, _SelfbotMessagesSelect
+# and _CheckView entirely
 
+# cogs.py
+
+from __future__ import annotations
 import json
 import logging
 import math
@@ -51,17 +55,20 @@ def _auto_add_db(bot, user_id: str, user, agg: AggregateResult) -> None:
 async def send_command_log(bot, interaction, command_name, options, agg, target_label, target_id):
     if hasattr(bot, "storage"):
         bot.storage.add_command_log({
-            "command": command_name, "user_id": str(interaction.user.id),
-            "username": str(interaction.user), "target_id": str(target_id),
+            "command":      command_name,
+            "user_id":      str(interaction.user.id),
+            "username":     str(interaction.user),
+            "target_id":    str(target_id),
             "target_label": target_label,
-            "guild": interaction.guild.name if interaction.guild else "DM",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "guild":        interaction.guild.name if interaction.guild else "DM",
+            "timestamp":    datetime.now(timezone.utc).isoformat(),
         })
         for err in (agg.errors if agg else []):
             bot.storage.add_api_error({
-                "error": err, "command": command_name,
-                "source": err.split(":")[0] if ":" in err else "Unknown",
-                "user_id": str(interaction.user.id),
+                "error":     err,
+                "command":   command_name,
+                "source":    err.split(":")[0] if ":" in err else "Unknown",
+                "user_id":   str(interaction.user.id),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
     if not config.LOG_CHANNEL_ID: return
@@ -95,7 +102,7 @@ def _fmt_role(r) -> str:
 
 
 # ─────────────────────────────────────────────
-# Selfbot V2 component builders
+# Selfbot V2 builders
 # ─────────────────────────────────────────────
 
 def _build_scraped_v2(agg: AggregateResult) -> dict:
@@ -120,7 +127,7 @@ def _build_scraped_v2(agg: AggregateResult) -> dict:
             uname = g.get("username", "?")
             roles = g.get("roles", [])
             rnames = [r.get("name", str(r)) if isinstance(r, dict) else str(r) for r in roles[:3]]
-            rstr = f" — {', '.join(rnames)}" if rnames else ""
+            rstr  = f" — {', '.join(rnames)}" if rnames else ""
             lines.append(f"• **{name}** (`{gid}`) · `{uname}`{rstr}")
         inner.append(c_text("**Current Servers**\n" + "\n".join(lines)))
 
@@ -139,37 +146,24 @@ def _build_scraped_v2(agg: AggregateResult) -> dict:
         inner.append(c_text("*Not found in any scraped server.*"))
 
     inner.append(c_sep())
-    inner.append(c_text("-# Use Roles / Messages dropdowns for per-server details."))
+    inner.append(c_text("-# Use the Roles / Messages dropdowns below for per-server details."))
 
     return c_container(*inner)
 
 
 def _build_roles_v2(gd: dict) -> dict:
-    """
-    Format:
-    Server Name
-    join date — Status
-
-    Server Name roles:
-    Role1
-    Role2
-    """
     guild_name    = gd.get("guild_name", "Unknown")
     roles         = gd.get("roles", [])
     still_present = gd.get("still_in_server") is True
     join_date     = gd.get("join_date", "unknown")
     status        = "Current" if still_present else "Previous"
 
-    # Clean join date to just date portion
     try:
         jd = join_date[:10] if join_date and join_date != "unknown" else "unknown"
     except Exception:
         jd = "unknown"
 
-    if roles:
-        role_lines = "\n".join(_fmt_role(r) for r in roles)
-    else:
-        role_lines = "No roles"
+    role_lines = "\n".join(_fmt_role(r) for r in roles) if roles else "No roles"
 
     body = (
         f"**{guild_name}**\n"
@@ -183,14 +177,6 @@ def _build_roles_v2(gd: dict) -> dict:
 
 
 def _build_messages_v2(gd: dict) -> dict:
-    """
-    Format:
-    Server Name
-    join date — Status
-
-    [time]: message
-    [time]: message
-    """
     guild_name    = gd.get("guild_name", "Unknown")
     recent_msgs   = gd.get("recent_messages", [])
     still_present = gd.get("still_in_server") is True
@@ -227,7 +213,7 @@ def _build_messages_v2(gd: dict) -> dict:
 
 
 # ─────────────────────────────────────────────
-# Selfbot dropdowns — Roles
+# Selfbot dropdowns — appear only in scraped section
 # ─────────────────────────────────────────────
 
 class _SelfbotRolesSelect(discord.ui.Select):
@@ -239,9 +225,8 @@ class _SelfbotRolesSelect(discord.ui.Select):
             label         = g.get("guild_name", "Unknown")[:100]
             value         = str(g.get("guild_id", "0"))[:100]
             still_present = g.get("still_in_server") is True
-            msg_count     = g.get("message_count", 0)
-            desc          = f"{'Current' if still_present else 'Previous'} · {msg_count} msg(s)"
-            options.append(discord.SelectOption(label=label, value=value, description=desc[:100]))
+            desc          = "Current" if still_present else "Previous"
+            options.append(discord.SelectOption(label=label, value=value, description=desc))
         if not options:
             options.append(discord.SelectOption(label="No servers found", value="none"))
         super().__init__(placeholder="Roles — pick a server", options=options, row=row)
@@ -249,15 +234,13 @@ class _SelfbotRolesSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.invoker_id:
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
+        if self.values[0] == "none":
+            return await interaction.response.send_message("No data.", ephemeral=True)
         gd = self._guilds_map.get(self.values[0])
         if not gd:
             return await interaction.response.send_message("No data.", ephemeral=True)
         await send_v2(interaction, _build_roles_v2(gd), ephemeral=True)
 
-
-# ─────────────────────────────────────────────
-# Selfbot dropdowns — Messages
-# ─────────────────────────────────────────────
 
 class _SelfbotMessagesSelect(discord.ui.Select):
     def __init__(self, guilds: list, invoker_id: int, row: int = 3):
@@ -278,6 +261,8 @@ class _SelfbotMessagesSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.invoker_id:
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
+        if self.values[0] == "none":
+            return await interaction.response.send_message("No data.", ephemeral=True)
         gd = self._guilds_map.get(self.values[0])
         if not gd:
             return await interaction.response.send_message("No data.", ephemeral=True)
@@ -318,13 +303,15 @@ class EventsCog(commands.Cog):
             if isinstance(msg, bytes): msg = msg.decode("utf-8")
             data = json.loads(msg)
             if data.get("t") != "APPLICATION_AUTHORIZED": return
-            d = data.get("d") or {}; user = d.get("user") or {}; uid = user.get("id")
+            d    = data.get("d") or {}
+            user = d.get("user") or {}
+            uid  = user.get("id")
             await self._log(build_user_install_embed(d))
             if uid and hasattr(self.bot, "storage"):
                 try:
                     user_id = int(uid)
                     mutual  = [{"id": str(g.id), "name": g.name}
-                                for g in self.bot.guilds if g.get_member(user_id)]
+                               for g in self.bot.guilds if g.get_member(user_id)]
                     self.bot.storage.store_user_servers(user_id, mutual)
                 except Exception: pass
         except Exception: pass
@@ -334,8 +321,10 @@ class EventsCog(commands.Cog):
         await self._log(build_command_error_embed(interaction, error))
         msg = "Something went wrong. The error has been logged."
         try:
-            if interaction.response.is_done(): await interaction.followup.send(msg, ephemeral=True)
-            else:                              await interaction.response.send_message(msg, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
         except discord.HTTPException: pass
 
 
@@ -344,7 +333,9 @@ class EventsCog(commands.Cog):
 class _NavBtn(discord.ui.Button):
     def __init__(self, label, invoker_id, view_ref, delta, row):
         super().__init__(label=label, style=discord.ButtonStyle.secondary, row=row, disabled=True)
-        self.invoker_id = invoker_id; self.view_ref = view_ref; self.delta = delta
+        self.invoker_id = invoker_id
+        self.view_ref   = view_ref
+        self.delta      = delta
 
     async def callback(self, interaction):
         if interaction.user.id != self.invoker_id:
@@ -370,7 +361,7 @@ class CheckCog(commands.Cog):
         description="Checks if a user is flagged. (Dropdown)")
     @app_commands.describe(
         user_id="Discord user ID (roblox=False) or Roblox user ID (roblox=True).",
-        roblox="True = Roblox lookup (Rotector + Moco-co). False = all Discord APIs.",
+        roblox="True = Roblox lookup. False = all Discord APIs.",
         extra="Show which API detected each server.",
         private="Send privately. Default True.",
     )
@@ -392,6 +383,12 @@ class CheckCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
+        # Save full detection result to DB
+        if hasattr(self.bot.storage, "save_detection_result"):
+            self.bot.storage.save_detection_result(
+                user_id, str(user) if user else f"User {user_id}", agg
+            )
+
         view = _CheckView(user, agg, extra, roblox, interaction.user.id)
         await send_v2(interaction, view.build(), view=view, ephemeral=private)
         await send_command_log(self.bot, interaction, "search",
@@ -403,22 +400,23 @@ class _CheckView(discord.ui.View):
     def __init__(self, user, agg, extra, roblox, invoker_id):
         super().__init__(timeout=300)
         self.user, self.agg, self.extra = user, agg, extra
-        self.roblox     = roblox
-        self.invoker_id = invoker_id
-        self.section    = "overview"
-        self.page       = 0
+        self.roblox           = roblox
+        self.invoker_id       = invoker_id
+        self.section          = "overview"
+        self.page             = 0
+        self._roles_select    = None
+        self._messages_select = None
 
+        # Row 0 — section select
         self.add_item(_CheckSelect(self))
 
+        # Row 1 — nav buttons
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
-        self.add_item(self._prev); self.add_item(self._lbl); self.add_item(self._next)
-
-        selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
-        if selfbot_guilds and not roblox:
-            self.add_item(_SelfbotRolesSelect(selfbot_guilds,    invoker_id, row=2))
-            self.add_item(_SelfbotMessagesSelect(selfbot_guilds, invoker_id, row=3))
+        self.add_item(self._prev)
+        self.add_item(self._lbl)
+        self.add_item(self._next)
 
         self.refresh_nav()
 
@@ -434,6 +432,26 @@ class _CheckView(discord.ui.View):
         self._prev.disabled = self.page <= 0
         self._next.disabled = self.page >= mp - 1
         self._lbl.label     = f"{self.page+1}/{mp}"
+
+    def _add_selfbot_dropdowns(self):
+        """Add roles + messages dropdowns on rows 2 & 3 when scraped section is active."""
+        selfbot_guilds = getattr(self.agg, "selfbot_guilds", []) or []
+        if not selfbot_guilds or self.roblox:
+            return
+        self._remove_selfbot_dropdowns()
+        self._roles_select    = _SelfbotRolesSelect(selfbot_guilds, self.invoker_id, row=2)
+        self._messages_select = _SelfbotMessagesSelect(selfbot_guilds, self.invoker_id, row=3)
+        self.add_item(self._roles_select)
+        self.add_item(self._messages_select)
+
+    def _remove_selfbot_dropdowns(self):
+        """Remove roles + messages dropdowns when leaving scraped section."""
+        if self._roles_select and self._roles_select in self.children:
+            self.remove_item(self._roles_select)
+            self._roles_select = None
+        if self._messages_select and self._messages_select in self.children:
+            self.remove_item(self._messages_select)
+            self._messages_select = None
 
     def build(self) -> dict:
         s = self.section
@@ -484,10 +502,21 @@ class _CheckSelect(discord.ui.Select):
         self.view_ref = view_ref
 
     async def callback(self, interaction):
-        vr = self.view_ref
+        vr           = self.view_ref
         if interaction.user.id != vr.invoker_id:
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
-        vr.section = self.values[0]; vr.page = 0; vr.refresh_nav()
+
+        prev_section = vr.section
+        vr.section   = self.values[0]
+        vr.page      = 0
+        vr.refresh_nav()
+
+        # Add dropdowns when entering scraped — remove when leaving
+        if vr.section == "scraped":
+            vr._add_selfbot_dropdowns()
+        elif prev_section == "scraped":
+            vr._remove_selfbot_dropdowns()
+
         await vr.do_edit(interaction)
 
 
@@ -500,7 +529,7 @@ class LookupCog(commands.Cog):
         description="Checks if a user is flagged. (Card)")
     @app_commands.describe(
         user_id="Discord user ID (roblox=False) or Roblox user ID (roblox=True).",
-        roblox="True = Roblox lookup (Rotector + Moco-co). False = all Discord APIs.",
+        roblox="True = Roblox lookup. False = all Discord APIs.",
         extra="Show which API detected each server.",
         private="Send privately. Default True.",
     )
@@ -522,6 +551,12 @@ class LookupCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
+        # Save full detection result to DB
+        if hasattr(self.bot.storage, "save_detection_result"):
+            self.bot.storage.save_detection_result(
+                user_id, str(user) if user else f"User {user_id}", agg
+            )
+
         view  = _LookupView(user, agg, extra, roblox, interaction.user.id)
         cards = view.build()
         await send_v2(interaction, *cards, view=view, ephemeral=private)
@@ -534,19 +569,27 @@ class _LookupView(discord.ui.View):
     def __init__(self, user, agg, extra, roblox, invoker_id):
         super().__init__(timeout=300)
         self.user, self.agg, self.extra = user, agg, extra
-        self.roblox     = roblox
-        self.invoker_id = invoker_id
-        self.page       = 0
+        self.roblox           = roblox
+        self.invoker_id       = invoker_id
+        self.page             = 0
+        self._roles_select    = None
+        self._messages_select = None
 
+        # Row 0 — nav
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=0)
         self._lbl  = _PageLabel(row=0)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=0)
-        self.add_item(self._prev); self.add_item(self._lbl); self.add_item(self._next)
+        self.add_item(self._prev)
+        self.add_item(self._lbl)
+        self.add_item(self._next)
 
+        # Rows 1 & 2 — selfbot dropdowns always visible in search2
         selfbot_guilds = getattr(agg, "selfbot_guilds", []) or []
         if selfbot_guilds and not roblox:
-            self.add_item(_SelfbotRolesSelect(selfbot_guilds,    invoker_id, row=1))
-            self.add_item(_SelfbotMessagesSelect(selfbot_guilds, invoker_id, row=2))
+            self._roles_select    = _SelfbotRolesSelect(selfbot_guilds, invoker_id, row=1)
+            self._messages_select = _SelfbotMessagesSelect(selfbot_guilds, invoker_id, row=2)
+            self.add_item(self._roles_select)
+            self.add_item(self._messages_select)
 
         self.refresh_nav()
 
