@@ -2,6 +2,8 @@
 
 # FlagCheckerDB.py
 
+# FlagCheckerDB.py
+
 from __future__ import annotations
 
 import logging
@@ -20,33 +22,10 @@ def _bool_env(key: str, default: bool) -> bool:
         return default
     return val in ("1", "true", "yes")
 
-# ── Selfbot API toggle — set false when account is banned/offline ──
 SELFBOT_ENABLED = _bool_env("SELFBOT_ENABLED", False)
 
 
 class FlagCheckerDB:
-    """
-    Single MongoDB database for all FlagChecker + Selfbot data.
-
-    Env vars:
-      FLAGDB_URL — MongoDB connection URL (same as selfbot MONGO_URI)
-      FLAGDB_DB  — database name (default: discord_scraper)
-
-    Toggle:
-      SELFBOT_ENABLED = true/false
-      When false — selfbot API calls are skipped, no errors thrown.
-      DB reads still work — seen_users is read regardless.
-
-    Collections:
-      flagged_users  — users flagged by any API (condos, exploits, tase, etc)
-      seen_users     — selfbot scraped members (written by selfbot, read here)
-      command_logs   — every command run
-      api_errors     — API failures
-      disabled_apis  — APIs toggled off
-      roles          — staff/dev/blacklist assignments
-      rocleaner      — imported RoCleaner server list
-    """
-
     def __init__(self):
         url = os.environ.get("FLAGDB_URL", "")
         db  = os.environ.get("FLAGDB_DB",  "discord_scraper")
@@ -56,20 +35,16 @@ class FlagCheckerDB:
         self._client = MongoClient(url, serverSelectionTimeoutMS=5000)
         self._db     = self._client[db]
 
-        # ── Collections ──
         self.flagged_users = self._db["flagged_users"]
         self.seen_users    = self._db["seen_users"]
-        self.command_logs  = self._db["command_logs"]
         self.api_errors    = self._db["api_errors"]
         self.disabled_apis = self._db["disabled_apis"]
         self.roles         = self._db["roles"]
         self.rocleaner     = self._db["rocleaner"]
 
-        # ── Indexes ──
         self.flagged_users.create_index("user_id", unique=True)
         self.seen_users.create_index([("user_id", ASCENDING), ("guild_id", ASCENDING)], unique=True)
         self.seen_users.create_index("user_id")
-        self.command_logs.create_index([("logged_at", ASCENDING)])
         self.api_errors.create_index([("logged_at", ASCENDING)])
         self.disabled_apis.create_index("api_name", unique=True)
         self.roles.create_index([("role_name", ASCENDING), ("user_id", ASCENDING)], unique=True)
@@ -85,9 +60,6 @@ class FlagCheckerDB:
 
     # ─────────────────────────────────────────────
     # Flagged users
-    # Stores ALL detection results — condos, exploits,
-    # tase, rotector, bloxycleaner, everything.
-    # Also READ back during /search to show prior flags.
     # ─────────────────────────────────────────────
 
     def add_flagged_user(self, user_id: str, username: str, sources: list, servers: list) -> None:
@@ -112,10 +84,6 @@ class FlagCheckerDB:
             log.error("[FlagCheckerDB] add_flagged_user: %s", e)
 
     def get_flagged_user(self, user_id: str) -> Optional[dict]:
-        """
-        Read prior flag record for a user.
-        Called during /search to surface previous detections.
-        """
         try:
             return self.flagged_users.find_one({"user_id": str(user_id)})
         except Exception as e:
@@ -145,10 +113,8 @@ class FlagCheckerDB:
         Saves full detection result to flagged_users.
         Stores condos, exploits, tase, rotector, bloxycleaner,
         selfbot guilds — everything from the AggregateResult.
-        Called automatically after every /search or /search2.
         """
         try:
-            # Build server list from all sources
             servers = []
             for s in getattr(agg, "tase_guilds", []):
                 servers.append({"name": s.get("name", "Unknown"), "source": "TASE"})
@@ -170,7 +136,7 @@ class FlagCheckerDB:
                 servers.append({"name": g.get("guild_name", "Unknown"), "source": "Selfbot-Previous"})
 
             if not servers and not getattr(agg, "sources_flagged", []):
-                return  # Nothing to save — user is clean
+                return
 
             self.flagged_users.update_one(
                 {"user_id": user_id},
@@ -191,21 +157,14 @@ class FlagCheckerDB:
                 },
                 upsert=True
             )
-            log.info("[FlagCheckerDB] Saved detection for %s — sources: %s", user_id, getattr(agg, "sources_flagged", []))
         except Exception as e:
             log.error("[FlagCheckerDB] save_detection_result: %s", e)
 
     # ─────────────────────────────────────────────
     # Seen users — selfbot scraped data
-    # Written by selfbot, READ by FlagChecker
     # ─────────────────────────────────────────────
 
     def get_seen_user(self, user_id: int) -> list:
-        """
-        Returns all guild records for a user from selfbot seen_users.
-        Used to surface scraped server presence in /search results.
-        Returns [] if nothing found or selfbot hasn't scraped them yet.
-        """
         try:
             return list(self.seen_users.find({"user_id": user_id}))
         except Exception as e:
@@ -213,11 +172,6 @@ class FlagCheckerDB:
             return []
 
     def build_selfbot_report(self, user_id: int) -> dict:
-        """
-        Builds selfbot-format report from seen_users DB.
-        Used as DB fallback when SELFBOT_ENABLED=false or API unreachable.
-        Returns same structure as selfbot API response.
-        """
         docs = self.get_seen_user(user_id)
         if not docs:
             return {}
@@ -243,24 +197,7 @@ class FlagCheckerDB:
         }
 
     # ─────────────────────────────────────────────
-    # Command logs
-    # ─────────────────────────────────────────────
-
-    def add_command_log(self, entry: dict) -> None:
-        try:
-            entry["logged_at"] = datetime.now(timezone.utc)
-            self.command_logs.insert_one(entry)
-        except Exception as e:
-            log.error("[FlagCheckerDB] add_command_log: %s", e)
-
-    def get_command_logs(self, limit: int = 50) -> list:
-        try:
-            return list(self.command_logs.find().sort("logged_at", -1).limit(limit))
-        except Exception:
-            return []
-
-    # ─────────────────────────────────────────────
-    # API errors
+    # API errors — keep these, useful for debugging
     # ─────────────────────────────────────────────
 
     def add_api_error(self, entry: dict) -> None:
