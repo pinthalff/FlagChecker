@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-
 @dataclass
 class AggregateResult:
     discord_id:              str
@@ -28,27 +27,31 @@ class AggregateResult:
     rotector_is_locked:       bool            = False
     rotector_flagged_friends: list            = field(default_factory=list)
     rotector_flagged_groups:  list            = field(default_factory=list)
-    # Rotector — Discord mode (from /discord/user/{id})
+    # Rotector — Discord mode
     rotector_discord_servers: list            = field(default_factory=list)
     rotector_connections:     list            = field(default_factory=list)
     rotector_alt_accounts:    list            = field(default_factory=list)
     rotector_roblox_links:    list            = field(default_factory=list)
-    # Rotector — Roblox->Discord mode (from /roblox/user/{id}/discord)
+    # Rotector — Roblox->Discord mode
     rotector_discord_accounts: list           = field(default_factory=list)
     rotector_roblox_alts:      list           = field(default_factory=list)
     # Moco-co
     moco_group_count:        Optional[int]   = None
     moco_group_types:        list            = field(default_factory=list)
     moco_groups:             list            = field(default_factory=list)
-    # BloxyCleaner — ERP database
+    # BloxyCleaner — ERP
     bloxycleaner_flagged:    bool            = False
     bloxycleaner_servers:    list            = field(default_factory=list)
-    # BloxyCleaner — Exploit database
+    # BloxyCleaner — Exploit
     bloxycleaner_exploit_flagged: bool       = False
     bloxycleaner_exploit_servers: list       = field(default_factory=list)
-    # RoCleaner (imported database)
+    # RoCleaner
     rocleaner_flagged:       bool            = False
     rocleaner_servers:       list            = field(default_factory=list)
+    # Selfbot — scraped Discord server presence
+    selfbot_guilds:          list            = field(default_factory=list)
+    selfbot_active_guilds:   list            = field(default_factory=list)
+    selfbot_prev_guilds:     list            = field(default_factory=list)
     # Meta
     sources_flagged:         list            = field(default_factory=list)
     sources_checked:         list            = field(default_factory=list)
@@ -65,4 +68,5 @@ class AggregateResult:
             and not self.bloxycleaner_exploit_flagged
             and not self.moco_group_count
             and not self.rocleaner_flagged
+            and not self.selfbot_guilds
         )
