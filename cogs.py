@@ -11,6 +11,8 @@
 
 # cogs.py
 
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -59,7 +61,7 @@ def _auto_add_db(bot, user_id: str, user, agg: AggregateResult) -> None:
 
 
 async def send_command_log(bot, interaction, command_name, options, agg, target_label, target_id):
-    # ── Only log to Discord channel, NOT to database ──
+    # Only log to Discord channel — NOT to database
     if not config.LOG_CHANNEL_ID: return
     ch = bot.get_channel(int(config.LOG_CHANNEL_ID))
     if not ch: return
@@ -94,50 +96,42 @@ def _fmt_role(r) -> str:
 # Selfbot V2 builders
 # ─────────────────────────────────────────────
 
-def _build_scraped_v2(agg: AggregateResult) -> dict:
+def _build_scraped_inline(agg: AggregateResult) -> str:
+    """
+    Returns scraped server presence as inline text
+    injected into the Exploits section.
+    No separate Scraped Servers section.
+    """
     guilds = getattr(agg, "selfbot_guilds", []) or []
     active = getattr(agg, "selfbot_active_guilds", []) or []
     prev   = getattr(agg, "selfbot_prev_guilds",   []) or []
 
-    header = (
-        f"## Scraped Server Presence\n"
-        f"Total Records: `{len(guilds)}`\n"
-        f"Current: `{len(active)}` · Previous: `{len(prev)}`"
-    )
+    if not guilds:
+        return ""
 
-    inner = [c_text(header)]
+    lines = [
+        f"## Scraped Server Presence",
+        f"Total: `{len(guilds)}` · Current: `{len(active)}` · Previous: `{len(prev)}`"
+    ]
 
     if active:
-        inner.append(c_sep())
-        lines = []
+        lines.append("\n**Current Servers**")
         for g in active:
             name   = g.get("guild_name", "Unknown")
             gid    = g.get("guild_id", "?")
-            uname  = g.get("username", "?")
             roles  = g.get("roles", [])
             rnames = [r.get("name", str(r)) if isinstance(r, dict) else str(r) for r in roles[:3]]
             rstr   = f" — {', '.join(rnames)}" if rnames else ""
-            lines.append(f"• **{name}** (`{gid}`) · `{uname}`{rstr}")
-        inner.append(c_text("**Current Servers**\n" + "\n".join(lines)))
+            lines.append(f"• **{name}** (`{gid}`){rstr}")
 
     if prev:
-        inner.append(c_sep())
-        lines = []
+        lines.append("\n**Previous Servers**")
         for g in prev:
-            name  = g.get("guild_name", "Unknown")
-            gid   = g.get("guild_id", "?")
-            uname = g.get("username", "?")
-            lines.append(f"• **{name}** (`{gid}`) · `{uname}`")
-        inner.append(c_text("**Previous Servers**\n" + "\n".join(lines)))
+            name = g.get("guild_name", "Unknown")
+            gid  = g.get("guild_id", "?")
+            lines.append(f"• **{name}** (`{gid}`)")
 
-    if not guilds:
-        inner.append(c_sep())
-        inner.append(c_text("*Not found in any scraped server.*"))
-
-    inner.append(c_sep())
-    inner.append(c_text("-# Use the Roles / Messages buttons for per-server details."))
-
-    return c_container(*inner)
+    return "\n".join(lines)
 
 
 def _build_roles_v2(gd: dict) -> dict:
@@ -414,7 +408,6 @@ class CheckCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
-        # Save detection result to DB
         if hasattr(self.bot.storage, "save_detection_result"):
             self.bot.storage.save_detection_result(
                 user_id, str(user) if user else f"User {user_id}", agg
@@ -469,13 +462,24 @@ class _CheckView(discord.ui.View):
 
     def build(self) -> dict:
         s = self.section
-        if s == "overview":  return build_check_overview(self.user, self.agg, self.extra)
-        if s == "condos":    return build_check_condos(self.agg, self.extra, self.page)
-        if s == "exploits":  return build_check_exploits(self.agg, self.extra, self.page)
+        if s == "overview":
+            return build_check_overview(self.user, self.agg, self.extra)
+        if s == "condos":
+            return build_check_condos(self.agg, self.extra, self.page)
+        if s == "exploits":
+            # Build exploits then inject scraped servers at the bottom
+            result       = build_check_exploits(self.agg, self.extra, self.page)
+            scraped_text = _build_scraped_inline(self.agg)
+            if scraped_text and result and "components" in result:
+                try:
+                    result["components"].append(c_sep())
+                    result["components"].append(c_text(scraped_text))
+                except Exception:
+                    pass
+            return result
         if s == "accounts":  return build_check_accounts(self.agg)
         if s == "profile":   return build_check_profile(self.agg)
         if s == "details":   return build_check_details(self.agg)
-        if s == "scraped":   return _build_scraped_v2(self.agg)
         return build_check_overview(self.user, self.agg, self.extra)
 
     async def do_edit(self, interaction):
@@ -484,8 +488,7 @@ class _CheckView(discord.ui.View):
 
 class _CheckSelect(discord.ui.Select):
     def __init__(self, view_ref):
-        roblox      = getattr(view_ref, "roblox", False)
-        has_selfbot = bool(getattr(view_ref.agg, "selfbot_guilds", None))
+        roblox = getattr(view_ref, "roblox", False)
 
         if roblox:
             options = [
@@ -503,14 +506,7 @@ class _CheckSelect(discord.ui.Select):
                 discord.SelectOption(label="Profile",   value="profile"),
                 discord.SelectOption(label="Details",   value="details"),
             ]
-            if has_selfbot:
-                active = len(getattr(view_ref.agg, "selfbot_active_guilds", []) or [])
-                prev   = len(getattr(view_ref.agg, "selfbot_prev_guilds",   []) or [])
-                options.append(discord.SelectOption(
-                    label="Scraped Servers",
-                    value="scraped",
-                    description=f"Current: {active} · Previous: {prev}",
-                ))
+            # No separate Scraped Servers — lives under Exploits
 
         super().__init__(placeholder="Select section", options=options, row=0)
         self.view_ref = view_ref
@@ -608,9 +604,6 @@ class _LookupView(discord.ui.View):
             build_lookup_accounts(self.user, self.agg),
             build_lookup_profile(self.user, self.agg),
         ]
-        selfbot_guilds = getattr(self.agg, "selfbot_guilds", []) or []
-        if selfbot_guilds and not self.roblox:
-            cards.append(_build_scraped_v2(self.agg))
         return [c for c in cards if c is not None]
 
     async def do_edit(self, interaction):
