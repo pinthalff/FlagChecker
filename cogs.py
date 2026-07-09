@@ -9,6 +9,8 @@
 
 # cogs.py
 
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -57,24 +59,7 @@ def _auto_add_db(bot, user_id: str, user, agg: AggregateResult) -> None:
 
 
 async def send_command_log(bot, interaction, command_name, options, agg, target_label, target_id):
-    if hasattr(bot, "storage"):
-        bot.storage.add_command_log({
-            "command":      command_name,
-            "user_id":      str(interaction.user.id),
-            "username":     str(interaction.user),
-            "target_id":    str(target_id),
-            "target_label": target_label,
-            "guild":        interaction.guild.name if interaction.guild else "DM",
-            "timestamp":    datetime.now(timezone.utc).isoformat(),
-        })
-        for err in (agg.errors if agg else []):
-            bot.storage.add_api_error({
-                "error":     err,
-                "command":   command_name,
-                "source":    err.split(":")[0] if ":" in err else "Unknown",
-                "user_id":   str(interaction.user.id),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+    # ── Only log to Discord channel, NOT to database ──
     if not config.LOG_CHANNEL_ID: return
     ch = bot.get_channel(int(config.LOG_CHANNEL_ID))
     if not ch: return
@@ -274,7 +259,7 @@ class _SelfbotMessagesSelect(discord.ui.Select):
 
 
 # ─────────────────────────────────────────────
-# Roles + Messages buttons — sit on same row as nav
+# Roles + Messages buttons
 # ─────────────────────────────────────────────
 
 class _RolesBtn(discord.ui.Button):
@@ -429,6 +414,7 @@ class CheckCog(commands.Cog):
         user = await _fetch_user(self.bot, user_id)
         _auto_add_db(self.bot, user_id, user, agg)
 
+        # Save detection result to DB
         if hasattr(self.bot.storage, "save_detection_result"):
             self.bot.storage.save_detection_result(
                 user_id, str(user) if user else f"User {user_id}", agg
@@ -453,7 +439,7 @@ class _CheckView(discord.ui.View):
         # Row 0 — section select
         self.add_item(_CheckSelect(self))
 
-        # Row 1 — nav buttons + Roles + Messages right next to them
+        # Row 1 — nav + Roles + Messages right next to them
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
