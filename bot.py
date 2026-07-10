@@ -1,173 +1,126 @@
 # bot.py
 
+# bot.py
+
 from __future__ import annotations
 
-import asyncio, logging, os, sys
-
-from datetime import datetime, timezone
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import asyncio
+import logging
+import os
+import sys
 
 import discord
 from discord.ext import commands
+from dotenv import load_dotenv
 
 import config
 from FlagCheckerDB import FlagCheckerDB
 from detection import DetectionService
-from renderer import CardRenderer
-from embeds import build_bot_ready_embed, build_status_control_embed
 from cogs import EventsCog, CheckCog, LookupCog
-from dashboard import DashboardCog
+from cogs_dbmanage import DBManageCog
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8"),
-    ],
-)
-
+load_dotenv()
 log = logging.getLogger("bot")
 
-_STATUS_MAP = {
-    "online":    (discord.Status.online,    "Online"),
-    "idle":      (discord.Status.idle,      "Idle"),
-    "dnd":       (discord.Status.dnd,       "Do Not Disturb"),
-    "invisible": (discord.Status.invisible, "Invisible"),
-}
+
+def setup_logging():
+    logging.basicConfig(
+        level   = logging.INFO,
+        format  = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers = [logging.StreamHandler(sys.stdout)],
+    )
 
 
-class StatusControlView(discord.ui.View):
-    def __init__(self) -> None: super().__init__(timeout=None)
-
-    async def _set(self, interaction: discord.Interaction, key: str) -> None:
-        if not await interaction.client.is_owner(interaction.user):
-            return await interaction.response.send_message("Owner only.", ephemeral=True)
-        status, label = _STATUS_MAP[key]
-        await interaction.client.change_presence(status=status)
-        await interaction.response.edit_message(embed=build_status_control_embed(label))
-        if config.LOG_CHANNEL_ID:
-            ch = interaction.client.get_channel(int(config.LOG_CHANNEL_ID))
-            if ch:
-                e = discord.Embed(title="Bot Status Changed")
-                e.description = (
-                    f"Status changed to **{label}**\n"
-                    f"Changed by: {interaction.user} (`{interaction.user.id}`)"
-                )
-                e.timestamp = datetime.now(timezone.utc)
-                try: await ch.send(embed=e)
-                except Exception: pass
-
-    @discord.ui.button(label="Online",    style=discord.ButtonStyle.success,   custom_id="status_online")
-    async def btn_online(self, i, _):    await self._set(i, "online")
-
-    @discord.ui.button(label="Idle",      style=discord.ButtonStyle.secondary, custom_id="status_idle")
-    async def btn_idle(self, i, _):      await self._set(i, "idle")
-
-    @discord.ui.button(label="DND",       style=discord.ButtonStyle.danger,    custom_id="status_dnd")
-    async def btn_dnd(self, i, _):       await self._set(i, "dnd")
-
-    @discord.ui.button(label="Invisible", style=discord.ButtonStyle.secondary, custom_id="status_invisible")
-    async def btn_invisible(self, i, _): await self._set(i, "invisible")
-
-
-class DetectorBot(commands.Bot):
-    def __init__(self) -> None:
-        intents         = discord.Intents.default()
-        intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
-
-        # ── FlagCheckerDB replaces both storage.py and database.py ──
-        self.storage   = FlagCheckerDB()
-        self.detection = DetectionService(self.storage)
-        self.renderer  = CardRenderer()
-
-    async def setup_hook(self) -> None:
-        self.add_view(StatusControlView())
-        await self.renderer._ensure_started()
-
-        log.info(
-            "[DB] FlagDB: OK | SelfDB: %s",
-            "ON" if self.storage.selfbot_enabled() else "OFF"
+class FlagCheckerBot(commands.Bot):
+    def __init__(self):
+        intents                 = discord.Intents.default()
+        intents.members         = True
+        intents.message_content = True
+        super().__init__(
+            command_prefix = "!",
+            intents        = intents,
+            help_command   = None,
         )
+        self.storage:   FlagCheckerDB   = None
+        self.detection: DetectionService = None
 
-        for cog in [EventsCog, DashboardCog, CheckCog, LookupCog]:
-            await self.add_cog(cog(self))
-            log.info("Loaded: %s", cog.__name__)
+    async def setup_hook(self):
+        # ── Storage ──
+        self.storage   = FlagCheckerDB()
+        self.detection = DetectionService(storage=self.storage)
 
-        async def _mode_check(interaction: discord.Interaction) -> bool:
-            if self.storage.has_role("blacklisted", interaction.user.id):
-                await interaction.response.send_message("You are blacklisted.", ephemeral=True)
-                return False
-            return True
+        # ── Cogs ──
+        await self.add_cog(EventsCog(self))
+        await self.add_cog(CheckCog(self))
+        await self.add_cog(LookupCog(self))
+        await self.add_cog(DBManageCog(self))
 
-        self.tree.interaction_check = _mode_check
+        log.info("[Bot] All cogs loaded")
 
-        # Global sync
+        # ── Sync slash commands ──
         try:
             synced = await self.tree.sync()
-            log.info("Synced %d commands globally", len(synced))
-        except Exception as exc:
-            log.error("Global sync failed: %s", exc)
+            log.info("[Bot] Synced %d slash command(s)", len(synced))
+        except Exception as e:
+            log.error("[Bot] Failed to sync commands: %s", e)
 
-        # Dev guild sync if set
-        if config.DEV_GUILD_ID:
-            try:
-                guild  = discord.Object(id=int(config.DEV_GUILD_ID))
-                self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-                log.info("Synced %d commands to dev guild %s", len(synced), config.DEV_GUILD_ID)
-            except Exception as exc:
-                log.error("Dev guild sync failed: %s", exc)
+    async def on_ready(self):
+        log.info("[Bot] Logged in as %s (ID: %s)", self.user, self.user.id)
+        log.info("[Bot] Guilds: %d", len(self.guilds))
 
-    async def on_ready(self) -> None:
-        log.info("Ready — %s | MOCK_MODE=%s", self.user, config.MOCK_MODE)
+        # DB status on boot
+        for s in self.storage.db_status():
+            tag = " ACTIVE" if s["active"] else ""
+            tag += " FULL"   if s["full"]   else ""
+            log.info(
+                "[DB %d] %s — %.1fMB (%.1f%%)%s",
+                s["slot"], s["db_name"], s["size_mb"], s["pct"], tag
+            )
+
         await self.change_presence(
-            status=discord.Status.online,
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="FlagChecker | /search | /search2"
+            activity = discord.Activity(
+                type = discord.ActivityType.watching,
+                name = "for exploiters"
             )
         )
-        if config.STATUS_CHANNEL_ID:
-            ch = self.get_channel(int(config.STATUS_CHANNEL_ID))
-            if ch:
-                try:
-                    await ch.send(embed=build_bot_ready_embed(self))
-                    await ch.send(
-                        embed=build_status_control_embed("Online"),
-                        view=StatusControlView()
-                    )
-                except discord.HTTPException: pass
 
-    async def close(self) -> None:
-        await self.renderer.close()
-        await self.detection.close()
-        self.storage.close()
+    async def on_disconnect(self):
+        log.warning("[Bot] Disconnected — will reconnect automatically")
+
+    async def on_resumed(self):
+        log.info("[Bot] Resumed session")
+
+    async def close(self):
+        log.info("[Bot] Shutting down...")
+        if self.detection:
+            await self.detection.close()
+        if self.storage:
+            self.storage.close()
         await super().close()
 
-    @commands.command(name="sync", hidden=True)
-    @commands.is_owner()
-    async def sync_commands(self, ctx, guild_id: str = None) -> None:
-        if guild_id:
-            guild  = discord.Object(id=int(guild_id))
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            await ctx.send(f"Synced {len(synced)} commands to `{guild_id}`.")
-        else:
-            synced = await self.tree.sync()
-            await ctx.send(f"Synced {len(synced)} commands globally.")
 
+async def main():
+    setup_logging()
 
-async def main() -> None:
-    if not config.DISCORD_TOKEN:
-        raise SystemExit("DISCORD_TOKEN not set — copy .env.example to .env and fill it in.")
-    async with DetectorBot() as bot:
-        await bot.start(config.DISCORD_TOKEN)
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        log.error("[Bot] DISCORD_TOKEN not set")
+        sys.exit(1)
+
+    bot = FlagCheckerBot()
+
+    # ── Auto reconnect loop ──
+    while True:
+        try:
+            await bot.start(token)
+        except discord.LoginFailure:
+            log.error("[Bot] Invalid token — check DISCORD_TOKEN")
+            sys.exit(1)
+        except Exception as e:
+            log.error("[Bot] Crashed: %s — restarting in 30s", e)
+            await asyncio.sleep(30)
+            bot = FlagCheckerBot()
 
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except KeyboardInterrupt: log.info("Shutting down.")
+    asyncio.run(main())
