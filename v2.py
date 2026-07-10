@@ -1,10 +1,3 @@
-"""FlagChecker — Discord Components V2 (no left border)."""
-
-# v2.py
-
-"""FlagChecker — Discord Components V2 (no left border)."""
-
-# v2.py
 from __future__ import annotations
 import math
 from typing import Optional
