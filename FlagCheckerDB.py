@@ -6,6 +6,8 @@
 
 # FlagCheckerDB.py
 
+# FlagCheckerDB.py
+
 from __future__ import annotations
 
 import logging
@@ -36,7 +38,7 @@ def _get_db_size(client, db_name: str) -> int:
         return 0
 
 
-def _connect(url: str, db_name: str) -> tuple:
+def _connect(url: str, db_name: str):
     client = MongoClient(
         url,
         serverSelectionTimeoutMS = 5000,
@@ -50,29 +52,29 @@ def _connect(url: str, db_name: str) -> tuple:
 
 class FlagCheckerDB:
     """
-    Multi-MongoDB support — up to 5 databases.
-    Automatically overflows to next DB when current is near full.
+    Multi-MongoDB support.
+    DBs 1-5: member data (seen_users, previous_users, flagged_users)
+    DBs 6-7: messages only
 
     Env vars:
-      FLAGDB_URL    — primary MongoDB URL (required)
-      FLAGDB_DB     — primary DB name (required)
-      FLAGDB_URL_2  — second MongoDB URL (optional)
-      FLAGDB_DB_2   — second DB name (optional)
-      FLAGDB_URL_3  — third (optional)
-      FLAGDB_DB_3   — third DB name (optional)
-      FLAGDB_URL_4  — fourth (optional)
-      FLAGDB_DB_4   — fourth DB name (optional)
-      FLAGDB_URL_5  — fifth (optional)
-      FLAGDB_DB_5   — fifth DB name (optional)
+      FLAGDB_URL    / FLAGDB_DB    — DB 1 (required)
+      FLAGDB_URL_2  / FLAGDB_DB_2  — DB 2 (optional)
+      FLAGDB_URL_3  / FLAGDB_DB_3  — DB 3 (optional)
+      FLAGDB_URL_4  / FLAGDB_DB_4  — DB 4 (optional)
+      FLAGDB_URL_5  / FLAGDB_DB_5  — DB 5 (optional)
+      FLAGDB_URL_6  / FLAGDB_DB_6  — DB 6 messages (optional)
+      FLAGDB_URL_7  / FLAGDB_DB_7  — DB 7 messages (optional)
 
       SELFBOT_ENABLED = true/false
     """
 
     def __init__(self):
-        self._connections = []
-        self._active_idx  = 0
+        self._member_conns  = []  # DBs 1-5
+        self._message_conns = []  # DBs 6-7
+        self._active_idx    = 0
+        self._active_msg_idx = 0
 
-        slots = [
+        member_slots = [
             (os.environ.get("FLAGDB_URL",   ""), os.environ.get("FLAGDB_DB",   "discord_scraper")),
             (os.environ.get("FLAGDB_URL_2", ""), os.environ.get("FLAGDB_DB_2", "discord_scraper")),
             (os.environ.get("FLAGDB_URL_3", ""), os.environ.get("FLAGDB_DB_3", "discord_scraper")),
@@ -80,33 +82,22 @@ class FlagCheckerDB:
             (os.environ.get("FLAGDB_URL_5", ""), os.environ.get("FLAGDB_DB_5", "discord_scraper")),
         ]
 
-        for i, (url, db_name) in enumerate(slots):
+        message_slots = [
+            (os.environ.get("FLAGDB_URL_6", ""), os.environ.get("FLAGDB_DB_6", "discord_messages")),
+            (os.environ.get("FLAGDB_URL_7", ""), os.environ.get("FLAGDB_DB_7", "discord_messages")),
+        ]
+
+        # ── Connect member DBs ──
+        for i, (url, db_name) in enumerate(member_slots):
             if not url or not db_name:
                 continue
             try:
                 client, db = _connect(url, db_name)
-                self._connections.append((client, db, db_name))
+                self._member_conns.append((client, db, db_name))
                 size_mb = _get_db_size(client, db_name) / 1024 / 1024
-                log.info("[FlagCheckerDB] DB %d connected — %s (%.1fMB used)", i + 1, db_name, size_mb)
-            except Exception as e:
-                log.warning("[FlagCheckerDB] DB %d failed to connect: %s", i + 1, e)
+                log.info("[FlagCheckerDB] Member DB %d connected — %s (%.1fMB)", i + 1, db_name, size_mb)
 
-        if not self._connections:
-            raise RuntimeError("No MongoDB connections available — set FLAGDB_URL")
-
-        for i, (client, db, db_name) in enumerate(self._connections):
-            size = _get_db_size(client, db_name)
-            if size < DB_SIZE_LIMIT_BYTES:
-                self._active_idx = i
-                log.info("[FlagCheckerDB] Active write DB: %d (%s)", i + 1, db_name)
-                break
-        else:
-            self._active_idx = len(self._connections) - 1
-            log.warning("[FlagCheckerDB] All DBs near capacity — using last available")
-
-        # Setup indexes on all DBs
-        for client, db, db_name in self._connections:
-            try:
+                # Indexes
                 db["flagged_users"].create_index("user_id", unique=True)
                 db["seen_users"].create_index([("user_id", ASCENDING), ("guild_id", ASCENDING)], unique=True)
                 db["seen_users"].create_index("user_id")
@@ -118,41 +109,102 @@ class FlagCheckerDB:
                 db["roles"].create_index([("role_name", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 db["rocleaner"].create_index("user_id")
             except Exception as e:
-                log.warning("[FlagCheckerDB] Index setup error on %s: %s", db_name, e)
+                log.warning("[FlagCheckerDB] Member DB %d failed: %s", i + 1, e)
+
+        # ── Connect message DBs ──
+        for i, (url, db_name) in enumerate(message_slots):
+            if not url or not db_name:
+                continue
+            try:
+                client, db = _connect(url, db_name)
+                self._message_conns.append((client, db, db_name))
+                size_mb = _get_db_size(client, db_name) / 1024 / 1024
+                log.info("[FlagCheckerDB] Message DB %d connected — %s (%.1fMB)", i + 6, db_name, size_mb)
+
+                # Indexes
+                db["messages"].create_index([("message_id", 1)], unique=True)
+                db["messages"].create_index("user_id")
+                db["messages"].create_index("guild_id")
+                db["messages"].create_index("sent_at")
+            except Exception as e:
+                log.warning("[FlagCheckerDB] Message DB %d failed: %s", i + 6, e)
+
+        if not self._member_conns:
+            raise RuntimeError("No MongoDB connections available — set FLAGDB_URL and FLAGDB_DB")
+
+        # ── Find active write DB ──
+        for i, (client, db, db_name) in enumerate(self._member_conns):
+            size = _get_db_size(client, db_name)
+            if size < DB_SIZE_LIMIT_BYTES:
+                self._active_idx = i
+                log.info("[FlagCheckerDB] Active member write DB: %d (%s)", i + 1, db_name)
+                break
+        else:
+            self._active_idx = len(self._member_conns) - 1
+            log.warning("[FlagCheckerDB] All member DBs near capacity")
+
+        if self._message_conns:
+            for i, (client, db, db_name) in enumerate(self._message_conns):
+                size = _get_db_size(client, db_name)
+                if size < DB_SIZE_LIMIT_BYTES:
+                    self._active_msg_idx = i
+                    log.info("[FlagCheckerDB] Active message write DB: %d (%s)", i + 6, db_name)
+                    break
+            else:
+                self._active_msg_idx = len(self._message_conns) - 1
+                log.warning("[FlagCheckerDB] All message DBs near capacity")
 
     # ─────────────────────────────────────────────
-    # Active write DB — auto overflow
+    # Active write DBs — auto overflow
     # ─────────────────────────────────────────────
 
     @property
     def _active_db(self):
-        client, db, db_name = self._connections[self._active_idx]
+        client, db, db_name = self._member_conns[self._active_idx]
         size = _get_db_size(client, db_name)
         if size >= DB_SIZE_LIMIT_BYTES:
-            log.warning("[FlagCheckerDB] DB %d full (%.1fMB) — overflowing",
-                        self._active_idx + 1, size / 1024 / 1024)
-            for i in range(self._active_idx + 1, len(self._connections)):
-                next_client, next_db, next_name = self._connections[i]
-                next_size = _get_db_size(next_client, next_name)
-                if next_size < DB_SIZE_LIMIT_BYTES:
+            log.warning("[FlagCheckerDB] Member DB %d full — overflowing", self._active_idx + 1)
+            for i in range(self._active_idx + 1, len(self._member_conns)):
+                nc, ndb, nname = self._member_conns[i]
+                if _get_db_size(nc, nname) < DB_SIZE_LIMIT_BYTES:
                     self._active_idx = i
-                    log.info("[FlagCheckerDB] Switched to DB %d (%s)", i + 1, next_name)
-                    return next_db
-            log.warning("[FlagCheckerDB] No available DB with space — using current")
+                    log.info("[FlagCheckerDB] Switched to member DB %d (%s)", i + 1, nname)
+                    return ndb
+            log.warning("[FlagCheckerDB] No member DB with space")
+        return db
+
+    @property
+    def _active_msg_db(self):
+        if not self._message_conns:
+            return None
+        client, db, db_name = self._message_conns[self._active_msg_idx]
+        size = _get_db_size(client, db_name)
+        if size >= DB_SIZE_LIMIT_BYTES:
+            log.warning("[FlagCheckerDB] Message DB %d full — overflowing", self._active_msg_idx + 6)
+            for i in range(self._active_msg_idx + 1, len(self._message_conns)):
+                nc, ndb, nname = self._message_conns[i]
+                if _get_db_size(nc, nname) < DB_SIZE_LIMIT_BYTES:
+                    self._active_msg_idx = i
+                    log.info("[FlagCheckerDB] Switched to message DB %d (%s)", i + 6, nname)
+                    return ndb
+            log.warning("[FlagCheckerDB] No message DB with space")
         return db
 
     @property
     def _all_member_dbs(self):
-        """All DB objects — used for reads and admin operations."""
-        return [db for _, db, _ in self._connections]
+        return [db for _, db, _ in self._member_conns]
+
+    @property
+    def _all_message_dbs(self):
+        return [db for _, db, _ in self._message_conns]
 
     @property
     def all_cols(self):
-        """All seen_users collections across all DBs."""
-        return [db["seen_users"] for _, db, _ in self._connections]
+        """All seen_users collections — used by cogs_dbmanage."""
+        return [db["seen_users"] for _, db, _ in self._member_conns]
 
     def close(self):
-        for client, _, _ in self._connections:
+        for client, _, _ in self._member_conns + self._message_conns:
             try:
                 client.close()
             except Exception:
@@ -163,16 +215,30 @@ class FlagCheckerDB:
 
     def db_status(self) -> list:
         status = []
-        for i, (client, db, db_name) in enumerate(self._connections):
+        for i, (client, db, db_name) in enumerate(self._member_conns):
             size    = _get_db_size(client, db_name)
             size_mb = size / 1024 / 1024
             pct     = (size / DB_SIZE_LIMIT_BYTES) * 100
             status.append({
                 "slot":    i + 1,
+                "type":    "member",
                 "db_name": db_name,
                 "size_mb": round(size_mb, 1),
                 "pct":     round(pct, 1),
                 "active":  i == self._active_idx,
+                "full":    size >= DB_SIZE_LIMIT_BYTES,
+            })
+        for i, (client, db, db_name) in enumerate(self._message_conns):
+            size    = _get_db_size(client, db_name)
+            size_mb = size / 1024 / 1024
+            pct     = (size / DB_SIZE_LIMIT_BYTES) * 100
+            status.append({
+                "slot":    i + 6,
+                "type":    "messages",
+                "db_name": db_name,
+                "size_mb": round(size_mb, 1),
+                "pct":     round(pct, 1),
+                "active":  i == self._active_msg_idx,
                 "full":    size >= DB_SIZE_LIMIT_BYTES,
             })
         return status
@@ -284,7 +350,8 @@ class FlagCheckerDB:
             log.error("[FlagCheckerDB] save_detection_result: %s", e)
 
     # ─────────────────────────────────────────────
-    # Seen users
+    # Seen users + Previous users
+    # build_selfbot_report reads BOTH and merges
     # ─────────────────────────────────────────────
 
     def get_seen_user(self, user_id: int) -> list:
@@ -301,33 +368,6 @@ class FlagCheckerDB:
                 log.error("[FlagCheckerDB] get_seen_user: %s", e)
         return results
 
-    def build_selfbot_report(self, user_id: int) -> dict:
-        docs = self.get_seen_user(user_id)
-        if not docs:
-            return {}
-        guilds = []
-        for doc in docs:
-            guilds.append({
-                "guild_id":        str(doc.get("guild_id", "")),
-                "guild_name":      doc.get("guild_name", "Unknown"),
-                "username":        doc.get("username", f"ID:{user_id}"),
-                "join_date":       doc.get("join_date", "unknown"),
-                "roles":           doc.get("roles", []),
-                "still_in_server": doc.get("still_in_server", False),
-                "message_count":   doc.get("message_count", 0),
-                "recent_messages": doc.get("messages", []),
-                "source":          "db"
-            })
-        return {
-            "user_id":       str(user_id),
-            "guilds":        guilds,
-            "total_servers": len(guilds)
-        }
-
-    # ─────────────────────────────────────────────
-    # Previous users
-    # ─────────────────────────────────────────────
-
     def get_previous_user(self, user_id: int) -> list:
         results     = []
         seen_guilds = set()
@@ -341,6 +381,66 @@ class FlagCheckerDB:
             except Exception as e:
                 log.error("[FlagCheckerDB] get_previous_user: %s", e)
         return results
+
+    def build_selfbot_report(self, user_id: int) -> dict:
+        """
+        Reads BOTH seen_users and previous_users.
+        seen_users      → still_in_server = True  → current
+        previous_users  → still_in_server = False → previous
+        Merges both into one guild list.
+        """
+        guilds      = []
+        seen_guilds = set()
+
+        # ── Current members from seen_users ──
+        for doc in self.get_seen_user(user_id):
+            gid = str(doc.get("guild_id", ""))
+            if gid in seen_guilds:
+                continue
+            seen_guilds.add(gid)
+            guilds.append({
+                "guild_id":        gid,
+                "guild_name":      doc.get("guild_name", "Unknown"),
+                "username":        doc.get("username", f"ID:{user_id}"),
+                "join_date":       doc.get("join_date", "unknown"),
+                "roles":           doc.get("roles", []),
+                "still_in_server": doc.get("still_in_server", True),
+                "message_count":   doc.get("message_count", 0),
+                "recent_messages": doc.get("messages", []),
+                "source":          "seen_users"
+            })
+
+        # ── Previous members from previous_users ──
+        for doc in self.get_previous_user(user_id):
+            gid = str(doc.get("guild_id", ""))
+            if gid in seen_guilds:
+                # Already have this guild from seen_users
+                # Update still_in_server to False if seen_users has wrong value
+                for g in guilds:
+                    if g["guild_id"] == gid:
+                        g["still_in_server"] = False
+                continue
+            seen_guilds.add(gid)
+            guilds.append({
+                "guild_id":        gid,
+                "guild_name":      doc.get("guild_name", "Unknown"),
+                "username":        doc.get("username", f"ID:{user_id}"),
+                "join_date":       doc.get("join_date", "unknown"),
+                "roles":           doc.get("roles", []),
+                "still_in_server": False,
+                "message_count":   0,
+                "recent_messages": [],
+                "source":          "previous_users"
+            })
+
+        if not guilds:
+            return {}
+
+        return {
+            "user_id":       str(user_id),
+            "guilds":        guilds,
+            "total_servers": len(guilds)
+        }
 
     def save_previous_user(self, user_id: int, guild_id: int, guild_name: str,
                            username: str, join_date: str, roles: list,
@@ -367,6 +467,57 @@ class FlagCheckerDB:
             )
         except Exception as e:
             log.error("[FlagCheckerDB] save_previous_user: %s", e)
+
+    # ─────────────────────────────────────────────
+    # Messages — read from DBs 6-7
+    # ─────────────────────────────────────────────
+
+    def get_messages(self, user_id: int, limit: int = 50) -> list:
+        """Reads messages from all message DBs merged."""
+        results = []
+        for db in self._all_message_dbs:
+            try:
+                docs = list(
+                    db["messages"]
+                    .find({"user_id": user_id})
+                    .sort("sent_at", -1)
+                    .limit(limit)
+                )
+                results.extend(docs)
+            except Exception as e:
+                log.error("[FlagCheckerDB] get_messages: %s", e)
+        results.sort(key=lambda x: x.get("sent_at", ""), reverse=True)
+        return results[:limit]
+
+    def save_message(self, message_id: str, user_id: int, username: str,
+                     guild_id: int, guild_name: str, channel_id: str,
+                     channel_name: str, content: str, sent_at: str) -> bool:
+        db = self._active_msg_db
+        if db is None:
+            return False
+        try:
+            db["messages"].update_one(
+                {"message_id": message_id},
+                {
+                    "$setOnInsert": {
+                        "message_id":   message_id,
+                        "user_id":      user_id,
+                        "username":     username,
+                        "guild_id":     guild_id,
+                        "guild_name":   guild_name,
+                        "channel_id":   channel_id,
+                        "channel_name": channel_name,
+                        "content":      content[:2000],
+                        "sent_at":      sent_at,
+                        "logged_at":    datetime.now(timezone.utc),
+                    }
+                },
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            log.error("[FlagCheckerDB] save_message: %s", e)
+            return False
 
     # ─────────────────────────────────────────────
     # API errors
