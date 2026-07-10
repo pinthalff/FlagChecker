@@ -1,4 +1,8 @@
 """FlagChecker — Discord Components V2 (no left border)."""
+
+# v2.py
+
+"""FlagChecker — Discord Components V2 (no left border)."""
 from __future__ import annotations
 import math
 from typing import Optional
@@ -108,9 +112,52 @@ def _avatar_url(user, agg: AggregateResult) -> Optional[str]:
     return None
 
 
+# ─────────────────────────────────────────────
+# Selfbot server merge helpers
+# ─────────────────────────────────────────────
+
+def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
+    """
+    Merges selfbot scraped servers into the exploit server list.
+    Current servers — shown as is: Xeno
+    Previous servers — shown with prefix: (Previous Server) Xeno
+    Deduplicates by name to avoid showing same server twice.
+    """
+    selfbot_active = getattr(agg, "selfbot_active_guilds", []) or []
+    selfbot_prev   = getattr(agg, "selfbot_prev_guilds",   []) or []
+
+    existing_names = {s["name"].lower() for s in exploits}
+
+    for g in selfbot_active:
+        name = g.get("guild_name", "Unknown")
+        if name.lower() not in existing_names:
+            exploits.append({
+                "name":      name,
+                "id":        str(g.get("guild_id", "")),
+                "sources":   ["Selfbot"],
+                "last_seen": None,
+            })
+            existing_names.add(name.lower())
+
+    for g in selfbot_prev:
+        name      = g.get("guild_name", "Unknown")
+        prev_name = f"(Previous Server) {name}"
+        if name.lower() not in existing_names:
+            exploits.append({
+                "name":      prev_name,
+                "id":        str(g.get("guild_id", "")),
+                "sources":   ["Selfbot"],
+                "last_seen": None,
+            })
+            existing_names.add(name.lower())
+
+    return exploits
+
+
 def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dict:
     condos   = correlate_condo_servers(agg)
     exploits = correlate_exploit_servers(agg)
+    exploits = _merge_selfbot_into_exploits(exploits, agg)
 
     name   = _display_name(user, agg)
     avatar = _avatar_url(user, agg)
@@ -176,11 +223,18 @@ def build_check_condos(agg: AggregateResult, extra: bool = False, page: int = 0)
 
 
 def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 0) -> dict:
+    """
+    Exploit servers — merges selfbot data directly.
+    Current selfbot servers shown as is.
+    Previous selfbot servers shown as (Previous Server) Name.
+    """
     exploits    = correlate_exploit_servers(agg)
+    exploits    = _merge_selfbot_into_exploits(exploits, agg)
     total       = len(exploits)
     total_pages = max(1, math.ceil(total / PAGE_SIZE_EXPLOITS))
     page_data   = exploits[page * PAGE_SIZE_EXPLOITS:(page + 1) * PAGE_SIZE_EXPLOITS]
     header      = f"Total Records: `{total}`"
+
     if page_data:
         lines = [_server_line(s, extra) for s in page_data]
         body  = "\n\n".join(lines) + f"\n\n-# Page {page+1}/{total_pages} · Servers: {total}"
@@ -513,15 +567,22 @@ def build_lookup_profile(user, agg: AggregateResult) -> Optional[dict]:
 
 
 def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dict:
+    """
+    Exploit card for search2.
+    Merges selfbot servers directly.
+    Current = shown as is.
+    Previous = shown as (Previous Server) Name.
+    """
     exploits = correlate_exploit_servers(agg)
+    exploits = _merge_selfbot_into_exploits(exploits, agg)
     total    = len(exploits)
+
     if total:
         sources = sorted({src for s in exploits for src in s.get("sources", [])})
-        head  = f"## Detected in {' / '.join(sources)}:"
-        lines = [_server_line(s, extra) for s in exploits]
-        note  = (f"\n\n-# Data is a snapshot, not live.\n"
-                 f"-# Page 1/1 · Servers: {total}")
-        inner = [c_text(head), c_sep(), c_text("\n".join(lines) + note)]
+        head    = f"## Detected in {' / '.join(sources)}:"
+        lines   = [_server_line(s, extra) for s in exploits]
+        note    = f"\n\n-# Data is a snapshot, not live.\n-# Page 1/1 · Servers: {total}"
+        inner   = [c_text(head), c_sep(), c_text("\n".join(lines) + note)]
     else:
         inner = [c_text("## Exploiting Records"), c_sep(),
                  c_text("This user has not been flagged for exploiting.")]
