@@ -13,6 +13,8 @@
 
 # cogs.py
 
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -35,8 +37,8 @@ from v2 import (
     send_v2, edit_v2,
     c_text, c_sep, c_section, c_container,
     build_check_overview, build_check_condos, build_check_exploits,
-    build_check_accounts, build_check_profile, build_check_details,
-    build_lookup_main, build_lookup_exploit, build_lookup_profile, build_lookup_accounts,
+    build_check_accounts,
+    build_lookup_main, build_lookup_exploit, build_lookup_accounts,
     PAGE_SIZE_CONDOS, PAGE_SIZE_EXPLOITS,
 )
 
@@ -95,44 +97,6 @@ def _fmt_role(r) -> str:
 # ─────────────────────────────────────────────
 # Selfbot V2 builders
 # ─────────────────────────────────────────────
-
-def _build_scraped_inline(agg: AggregateResult) -> str:
-    """
-    Returns scraped server presence as inline text
-    injected into the Exploits section.
-    No separate Scraped Servers section.
-    """
-    guilds = getattr(agg, "selfbot_guilds", []) or []
-    active = getattr(agg, "selfbot_active_guilds", []) or []
-    prev   = getattr(agg, "selfbot_prev_guilds",   []) or []
-
-    if not guilds:
-        return ""
-
-    lines = [
-        f"## Scraped Server Presence",
-        f"Total: `{len(guilds)}` · Current: `{len(active)}` · Previous: `{len(prev)}`"
-    ]
-
-    if active:
-        lines.append("\n**Current Servers**")
-        for g in active:
-            name   = g.get("guild_name", "Unknown")
-            gid    = g.get("guild_id", "?")
-            roles  = g.get("roles", [])
-            rnames = [r.get("name", str(r)) if isinstance(r, dict) else str(r) for r in roles[:3]]
-            rstr   = f" — {', '.join(rnames)}" if rnames else ""
-            lines.append(f"• **{name}** (`{gid}`){rstr}")
-
-    if prev:
-        lines.append("\n**Previous Servers**")
-        for g in prev:
-            name = g.get("guild_name", "Unknown")
-            gid  = g.get("guild_id", "?")
-            lines.append(f"• **{name}** (`{gid}`)")
-
-    return "\n".join(lines)
-
 
 def _build_roles_v2(gd: dict) -> dict:
     guild_name    = gd.get("guild_name", "Unknown")
@@ -432,7 +396,7 @@ class _CheckView(discord.ui.View):
         # Row 0 — section select
         self.add_item(_CheckSelect(self))
 
-        # Row 1 — nav + Roles + Messages right next to them
+        # Row 1 — nav + Roles + Messages
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
@@ -462,24 +426,10 @@ class _CheckView(discord.ui.View):
 
     def build(self) -> dict:
         s = self.section
-        if s == "overview":
-            return build_check_overview(self.user, self.agg, self.extra)
-        if s == "condos":
-            return build_check_condos(self.agg, self.extra, self.page)
-        if s == "exploits":
-            # Build exploits then inject scraped servers at the bottom
-            result       = build_check_exploits(self.agg, self.extra, self.page)
-            scraped_text = _build_scraped_inline(self.agg)
-            if scraped_text and result and "components" in result:
-                try:
-                    result["components"].append(c_sep())
-                    result["components"].append(c_text(scraped_text))
-                except Exception:
-                    pass
-            return result
+        if s == "overview":  return build_check_overview(self.user, self.agg, self.extra)
+        if s == "condos":    return build_check_condos(self.agg, self.extra, self.page)
+        if s == "exploits":  return build_check_exploits(self.agg, self.extra, self.page)
         if s == "accounts":  return build_check_accounts(self.agg)
-        if s == "profile":   return build_check_profile(self.agg)
-        if s == "details":   return build_check_details(self.agg)
         return build_check_overview(self.user, self.agg, self.extra)
 
     async def do_edit(self, interaction):
@@ -494,8 +444,6 @@ class _CheckSelect(discord.ui.Select):
             options = [
                 discord.SelectOption(label="Overview",  value="overview"),
                 discord.SelectOption(label="Accounts",  value="accounts"),
-                discord.SelectOption(label="Details",   value="details"),
-                discord.SelectOption(label="Profile",   value="profile"),
             ]
         else:
             options = [
@@ -503,10 +451,7 @@ class _CheckSelect(discord.ui.Select):
                 discord.SelectOption(label="Condos",    value="condos"),
                 discord.SelectOption(label="Exploits",  value="exploits"),
                 discord.SelectOption(label="Accounts",  value="accounts"),
-                discord.SelectOption(label="Profile",   value="profile"),
-                discord.SelectOption(label="Details",   value="details"),
             ]
-            # No separate Scraped Servers — lives under Exploits
 
         super().__init__(placeholder="Select section", options=options, row=0)
         self.view_ref = view_ref
@@ -573,7 +518,7 @@ class _LookupView(discord.ui.View):
         self.invoker_id = invoker_id
         self.page       = 0
 
-        # Row 0 — nav + Roles + Messages right next to them
+        # Row 0 — nav + Roles + Messages
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=0)
         self._lbl  = _PageLabel(row=0)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=0)
@@ -602,7 +547,6 @@ class _LookupView(discord.ui.View):
             build_lookup_main(self.user, self.agg, self.extra, self.page),
             build_lookup_exploit(self.user, self.agg, self.extra),
             build_lookup_accounts(self.user, self.agg),
-            build_lookup_profile(self.user, self.agg),
         ]
         return [c for c in cards if c is not None]
 
