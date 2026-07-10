@@ -3,6 +3,8 @@
 # v2.py
 
 """FlagChecker — Discord Components V2 (no left border)."""
+
+# v2.py
 from __future__ import annotations
 import math
 from typing import Optional
@@ -112,20 +114,9 @@ def _avatar_url(user, agg: AggregateResult) -> Optional[str]:
     return None
 
 
-# ─────────────────────────────────────────────
-# Selfbot server merge helpers
-# ─────────────────────────────────────────────
-
 def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
-    """
-    Merges selfbot scraped servers into the exploit server list.
-    Current servers — shown as is: Xeno
-    Previous servers — shown with prefix: (Previous Server) Xeno
-    Deduplicates by name to avoid showing same server twice.
-    """
     selfbot_active = getattr(agg, "selfbot_active_guilds", []) or []
     selfbot_prev   = getattr(agg, "selfbot_prev_guilds",   []) or []
-
     existing_names = {s["name"].lower() for s in exploits}
 
     for g in selfbot_active:
@@ -140,11 +131,10 @@ def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
             existing_names.add(name.lower())
 
     for g in selfbot_prev:
-        name      = g.get("guild_name", "Unknown")
-        prev_name = f"(Previous Server) {name}"
+        name = g.get("guild_name", "Unknown")
         if name.lower() not in existing_names:
             exploits.append({
-                "name":      prev_name,
+                "name":      f"(Previous Server) {name}",
                 "id":        str(g.get("guild_id", "")),
                 "sources":   ["Selfbot"],
                 "last_seen": None,
@@ -223,18 +213,12 @@ def build_check_condos(agg: AggregateResult, extra: bool = False, page: int = 0)
 
 
 def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 0) -> dict:
-    """
-    Exploit servers — merges selfbot data directly.
-    Current selfbot servers shown as is.
-    Previous selfbot servers shown as (Previous Server) Name.
-    """
     exploits    = correlate_exploit_servers(agg)
     exploits    = _merge_selfbot_into_exploits(exploits, agg)
     total       = len(exploits)
     total_pages = max(1, math.ceil(total / PAGE_SIZE_EXPLOITS))
     page_data   = exploits[page * PAGE_SIZE_EXPLOITS:(page + 1) * PAGE_SIZE_EXPLOITS]
     header      = f"Total Records: `{total}`"
-
     if page_data:
         lines = [_server_line(s, extra) for s in page_data]
         body  = "\n\n".join(lines) + f"\n\n-# Page {page+1}/{total_pages} · Servers: {total}"
@@ -249,7 +233,7 @@ def build_check_accounts(agg: AggregateResult) -> dict:
     if agg.rotector_connections:
         accounts.append("**Linked Roblox Accounts**")
         for conn in agg.rotector_connections:
-            u = conn.get('robloxUsername', '?')
+            u   = conn.get('robloxUsername', '?')
             uid = conn.get('robloxUserId', '?')
             accounts.append(f"• {u} (`{uid}`)")
             detected = conn.get('detectedAt')
@@ -258,7 +242,7 @@ def build_check_accounts(agg: AggregateResult) -> dict:
         if accounts: accounts.append("")
         accounts.append("**Roblox Alt Accounts**")
         for alt in agg.rotector_alt_accounts:
-            u = alt.get('robloxUsername', '?')
+            u   = alt.get('robloxUsername', '?')
             uid = alt.get('robloxUserId', '?')
             accounts.append(f"• {u} (`{uid}`)")
             detected = alt.get('detectedAt')
@@ -267,166 +251,6 @@ def build_check_accounts(agg: AggregateResult) -> dict:
         return c_container(c_text("No linked accounts."))
     body = "\n".join(accounts)
     return c_container(c_text("## Accounts"), c_sep(), c_text(body))
-
-
-def build_check_profile(agg: AggregateResult) -> dict:
-    profile = []
-    if agg.rotector_flagged_friends:
-        profile.append("**Flagged Friends**")
-        for f in agg.rotector_flagged_friends:
-            profile.append(f"• {f.get('name', '?')} (`{f.get('id', '?')}`)")
-        profile.append("")
-    if agg.rotector_flagged_groups:
-        profile.append("**Flagged Groups**")
-        for g in agg.rotector_flagged_groups:
-            gline = f"• {g.get('name', '?')} (`{g.get('id', '?')}`)"
-            if g.get("type"): gline += f" — {g['type']}"
-            profile.append(gline)
-        profile.append("")
-    if agg.moco_groups:
-        profile.append("**Moco-co Groups**")
-        for g in agg.moco_groups:
-            gline = f"• {g.get('name', '?')} (`{g.get('id', '?')}`)"
-            if g.get("type"): gline += f" — {g['type']}"
-            profile.append(gline)
-        profile.append("")
-    if agg.rotector_reasons or agg.rotector_flag_type is not None:
-        profile.append("**Violation Details**")
-        if agg.rotector_flag_type is not None:
-            flag = config.ROTECTOR_FLAG_LABELS.get(agg.rotector_flag_type, "Unknown")
-            conf = agg.rotector_confidence or 0
-            profile.append(f"Flag: `{flag}` · Confidence: `{conf:.1f}%`")
-        if agg.rotector_reasons:
-            profile.append("Reasons:")
-            for r in agg.rotector_reasons:
-                profile.append(f"  • {r}")
-        profile.append("")
-    if agg.rotector_alt_accounts:
-        profile.append("**Alternate Accounts**")
-        for alt in agg.rotector_alt_accounts:
-            profile.append(f"• {alt.get('robloxUsername', '?')} (`{alt.get('robloxUserId', '?')}`)")
-        profile.append("")
-    if not profile:
-        return c_container(c_text("No profile data detected."))
-    body = "\n".join(profile).strip()
-    return c_container(c_text("## Profile"), c_sep(), c_text(body))
-
-
-def build_check_details(agg: AggregateResult) -> dict:
-    lines = []
-
-    if agg.rotector_flag_type is not None:
-        flag = config.ROTECTOR_FLAG_LABELS.get(agg.rotector_flag_type, "Unknown")
-        conf = agg.rotector_confidence or 0
-        lines.append("**Rotector (Roblox)**")
-        lines.append(f"Flag Type: `{flag}`")
-        lines.append(f"Confidence: `{conf:.1f}%`")
-        if agg.rotector_is_locked:
-            lines.append("Status: 🔒 Locked")
-        if agg.rotector_reasons:
-            lines.append("Reasons:")
-            for r in agg.rotector_reasons:
-                lines.append(f"  • {r}")
-        lines.append("")
-
-    if agg.rotector_discord_servers:
-        lines.append("**Rotector (Discord)**")
-        lines.append(f"Tracked Servers: `{len(agg.rotector_discord_servers)}`")
-        for s in agg.rotector_discord_servers:
-            sname = s.get("serverName") or s.get("name") or "Unknown"
-            sid   = s.get("serverId") or s.get("id") or ""
-            tase  = " · `TASE`" if s.get("isTase") else ""
-            lines.append(f"  • **{sname}**" + (f" (`{sid}`)" if sid else "") + tase)
-        if agg.rotector_connections:
-            lines.append(f"Linked Roblox Accounts: `{len(agg.rotector_connections)}`")
-            for conn in agg.rotector_connections:
-                lines.append(f"  • {conn.get('robloxUsername', '?')} (`{conn.get('robloxUserId', '?')}`)")
-        if agg.rotector_alt_accounts:
-            lines.append(f"Roblox Alt Accounts: `{len(agg.rotector_alt_accounts)}`")
-            for alt in agg.rotector_alt_accounts:
-                lines.append(f"  • {alt.get('robloxUsername', '?')} (`{alt.get('robloxUserId', '?')}`)")
-        lines.append("")
-
-    if agg.tase_score is not None and agg.tase_score > 0:
-        lines.append(f"**TASE**")
-        lines.append(f"Score: `{agg.tase_score}`")
-        if agg.tase_score_breakdown:
-            for k, v in agg.tase_score_breakdown.items():
-                if v:
-                    sign = "+" if v >= 0 else ""
-                    lines.append(f"  • {k.replace('_', ' ').title()}: `{sign}{v}`")
-        lines.append("")
-
-    if agg.bloxycleaner_flagged:
-        lines.append(f"**BloxyCleaner (ERP)**")
-        lines.append(f"Flagged: Yes")
-        if agg.bloxycleaner_servers:
-            lines.append(f"Servers: `{len(agg.bloxycleaner_servers)}`")
-        lines.append("")
-
-    if agg.bloxycleaner_exploit_flagged:
-        lines.append(f"**BloxyCleaner (Exploit)**")
-        lines.append(f"Flagged: Yes")
-        if agg.bloxycleaner_exploit_servers:
-            lines.append(f"Servers: `{len(agg.bloxycleaner_exploit_servers)}`")
-        lines.append("")
-
-    if agg.rocleaner_flagged:
-        lines.append(f"**RoCleaner**")
-        lines.append(f"Found in imported database.")
-        if agg.rocleaner_servers:
-            lines.append(f"Servers: `{len(agg.rocleaner_servers)}`")
-        lines.append("")
-
-    if agg.moco_group_count:
-        lines.append(f"**Moco-co**")
-        lines.append(f"Flagged Groups: `{agg.moco_group_count}`")
-        if agg.moco_group_types:
-            lines.append(f"Group Types: `{', '.join(agg.moco_group_types)}`")
-        if agg.moco_groups:
-            for g in agg.moco_groups:
-                gline = f"  • **{g.get('name', 'Unknown')}**"
-                if g.get("id"): gline += f" (`{g['id']}`)"
-                if g.get("type"): gline += f" — {g['type']}"
-                lines.append(gline)
-        lines.append("")
-
-    if not lines:
-        return c_container(c_text("## Violation Details"), c_sep(),
-                           c_text("No violations detected."))
-
-    body = "\n".join(lines).strip()
-    return c_container(c_text("## Violation Details"), c_sep(), c_text(body))
-
-
-def build_check_friends(agg: AggregateResult) -> dict:
-    friends = agg.rotector_flagged_friends
-    header  = f"Flagged Friends: `{len(friends)}`"
-    if friends:
-        lines = [f"• **{f.get('name', 'Unknown')}** (`{f.get('id', '?')}`)" for f in friends]
-        inner = [c_text(header), c_sep(), c_text("\n".join(lines))]
-    else:
-        inner = [c_text(header), c_sep(), c_text("No flagged friends detected.")]
-    return c_container(*inner)
-
-
-def build_check_groups(agg: AggregateResult) -> dict:
-    groups = (agg.rotector_flagged_groups or []) + (agg.moco_groups or [])
-    total  = len(groups) or agg.moco_group_count or 0
-    header = f"Flagged Groups: `{total}`"
-    if groups:
-        lines = []
-        for g in groups:
-            line = f"• **{g.get('name', 'Unknown')}** (`{g.get('id', '?')}`)"
-            if g.get("type"): line += f" — {g['type']}"
-            lines.append(line)
-        inner = [c_text(header), c_sep(), c_text("\n".join(lines))]
-    elif agg.moco_group_types:
-        inner = [c_text(header), c_sep(),
-                 c_text(f"Group types: `{', '.join(agg.moco_group_types)}`")]
-    else:
-        inner = [c_text(header), c_sep(), c_text("No flagged groups detected.")]
-    return c_container(*inner)
 
 
 def build_lookup_main(user, agg: AggregateResult, extra: bool = False, page: int = 0) -> dict:
@@ -482,12 +306,12 @@ def build_lookup_main(user, agg: AggregateResult, extra: bool = False, page: int
 
 
 def build_lookup_accounts(user, agg: AggregateResult) -> Optional[dict]:
-    name = _display_name(user, agg)
+    name     = _display_name(user, agg)
     accounts = [f"## Accounts — {name}", ""]
     if agg.rotector_connections:
         accounts.append("**Linked Roblox Accounts**")
         for conn in agg.rotector_connections:
-            u = conn.get('robloxUsername', '?')
+            u   = conn.get('robloxUsername', '?')
             uid = conn.get('robloxUserId', '?')
             accounts.append(f"• {u} (`{uid}`)")
             detected = conn.get('detectedAt')
@@ -502,7 +326,7 @@ def build_lookup_accounts(user, agg: AggregateResult) -> Optional[dict]:
     if agg.rotector_alt_accounts:
         accounts.append("**Roblox Alt Accounts**")
         for alt in agg.rotector_alt_accounts:
-            u = alt.get('robloxUsername', '?')
+            u   = alt.get('robloxUsername', '?')
             uid = alt.get('robloxUserId', '?')
             accounts.append(f"• {u} (`{uid}`)")
             detected = alt.get('detectedAt')
@@ -520,63 +344,10 @@ def build_lookup_accounts(user, agg: AggregateResult) -> Optional[dict]:
     return c_container(c_text(body))
 
 
-def build_lookup_profile(user, agg: AggregateResult) -> Optional[dict]:
-    name = _display_name(user, agg)
-    profile = [f"## Profile — {name}", ""]
-    if agg.rotector_flagged_friends:
-        profile.append("**Flagged Friends**")
-        for f in agg.rotector_flagged_friends:
-            profile.append(f"• {f.get('name', '?')} (`{f.get('id', '?')}`)")
-        profile.append("")
-    if agg.rotector_flagged_groups:
-        profile.append("**Flagged Groups**")
-        for g in agg.rotector_flagged_groups:
-            gline = f"• {g.get('name', '?')} (`{g.get('id', '?')}`)"
-            if g.get("type"): gline += f" — {g['type']}"
-            profile.append(gline)
-        profile.append("")
-    if agg.moco_groups:
-        profile.append("**Moco-co Groups**")
-        for g in agg.moco_groups:
-            gline = f"• {g.get('name', '?')} (`{g.get('id', '?')}`)"
-            if g.get("type"): gline += f" — {g['type']}"
-            profile.append(gline)
-        profile.append("")
-    if agg.rotector_reasons or agg.rotector_flag_type is not None:
-        profile.append("**Violation Details**")
-        if agg.rotector_flag_type is not None:
-            flag = config.ROTECTOR_FLAG_LABELS.get(agg.rotector_flag_type, "Unknown")
-            conf = agg.rotector_confidence or 0
-            profile.append(f"Flag: `{flag}` · Confidence: `{conf:.1f}%`")
-        if agg.rotector_reasons:
-            profile.append("Reasons:")
-            for r in agg.rotector_reasons:
-                profile.append(f"  • {r}")
-        profile.append("")
-    if agg.rotector_alt_accounts:
-        profile.append("**Alternate Accounts**")
-        for alt in agg.rotector_alt_accounts:
-            username = alt.get('robloxUsername', '?')
-            userid = alt.get('robloxUserId', '?')
-            profile.append(f"• {username} (`{userid}`)")
-        profile.append("")
-    if len(profile) <= 2:
-        return None
-    body = "\n".join(profile).strip()
-    return c_container(c_text(body))
-
-
 def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dict:
-    """
-    Exploit card for search2.
-    Merges selfbot servers directly.
-    Current = shown as is.
-    Previous = shown as (Previous Server) Name.
-    """
     exploits = correlate_exploit_servers(agg)
     exploits = _merge_selfbot_into_exploits(exploits, agg)
     total    = len(exploits)
-
     if total:
         sources = sorted({src for s in exploits for src in s.get("sources", [])})
         head    = f"## Detected in {' / '.join(sources)}:"
@@ -587,97 +358,3 @@ def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dic
         inner = [c_text("## Exploiting Records"), c_sep(),
                  c_text("This user has not been flagged for exploiting.")]
     return c_container(*inner)
-
-
-def build_lookup_violation(user, agg: AggregateResult) -> dict:
-    name = _display_name(user, agg)
-    lines = [f"## Violation Details — {name}", ""]
-
-    if agg.rotector_flag_type is not None:
-        flag = config.ROTECTOR_FLAG_LABELS.get(agg.rotector_flag_type, "Unknown")
-        conf = agg.rotector_confidence or 0
-        lines.append("**Rotector (Roblox)**")
-        lines.append(f"Flag Type: `{flag}`")
-        lines.append(f"Confidence: `{conf:.1f}%`")
-        if agg.rotector_reasons:
-            lines.append("Reasons:")
-            for r in agg.rotector_reasons:
-                lines.append(f"  • {r}")
-        lines.append("")
-
-    if agg.tase_score is not None and agg.tase_score > 0:
-        lines.append("**TASE**")
-        lines.append(f"Score: `{agg.tase_score}`")
-        if agg.tase_score_breakdown:
-            for k, v in agg.tase_score_breakdown.items():
-                if v:
-                    sign = "+" if v >= 0 else ""
-                    lines.append(f"  • {k.replace('_', ' ').title()}: `{sign}{v}`")
-        lines.append("")
-
-    if agg.bloxycleaner_flagged:
-        lines.append("**BloxyCleaner (ERP)**")
-        lines.append("Flagged: Yes")
-        if agg.bloxycleaner_servers:
-            lines.append(f"Servers: `{len(agg.bloxycleaner_servers)}`")
-        lines.append("")
-
-    if agg.bloxycleaner_exploit_flagged:
-        lines.append("**BloxyCleaner (Exploit)**")
-        lines.append("Flagged: Yes")
-        if agg.bloxycleaner_exploit_servers:
-            lines.append(f"Servers: `{len(agg.bloxycleaner_exploit_servers)}`")
-        lines.append("")
-
-    if agg.rocleaner_flagged:
-        lines.append("**RoCleaner**")
-        lines.append("Found in imported database.")
-        if agg.rocleaner_servers:
-            lines.append(f"Servers: `{len(agg.rocleaner_servers)}`")
-        lines.append("")
-
-    if agg.moco_group_count:
-        lines.append("**Moco-co**")
-        lines.append(f"Flagged Groups: `{agg.moco_group_count}`")
-        if agg.moco_group_types:
-            lines.append(f"Group Types: `{', '.join(agg.moco_group_types)}`")
-        if agg.moco_groups:
-            for g in agg.moco_groups:
-                gline = f"  • **{g.get('name', 'Unknown')}**"
-                if g.get("id"): gline += f" (`{g['id']}`)"
-                if g.get("type"): gline += f" — {g['type']}"
-                lines.append(gline)
-        lines.append("")
-
-    if len(lines) <= 2:
-        lines.append("No violations detected.")
-
-    body = "\n".join(lines).strip()
-    return c_container(c_text(body))
-
-
-def build_lookup_friends(user, agg: AggregateResult) -> Optional[dict]:
-    friends = agg.rotector_flagged_friends
-    if not friends: return None
-    name  = _display_name(user, agg)
-    head  = f"## Flagged Friends — {name}\nTotal: `{len(friends)}`"
-    lines = [f"• **{f.get('name', 'Unknown')}** (`{f.get('id', '?')}`)" for f in friends]
-    return c_container(c_text(head), c_sep(), c_text("\n".join(lines)))
-
-
-def build_lookup_groups(user, agg: AggregateResult) -> Optional[dict]:
-    groups = (agg.rotector_flagged_groups or []) + (agg.moco_groups or [])
-    total  = len(groups) or agg.moco_group_count or 0
-    if not total: return None
-    name  = _display_name(user, agg)
-    head  = f"## Flagged Groups — {name}\nTotal: `{total}`"
-    if groups:
-        lines = []
-        for g in groups:
-            line = f"• **{g.get('name', 'Unknown')}** (`{g.get('id', '?')}`)"
-            if g.get("type"): line += f" — {g['type']}"
-            lines.append(line)
-        body = "\n".join(lines)
-    else:
-        body = f"Group types: `{', '.join(agg.moco_group_types)}`"
-    return c_container(c_text(head), c_sep(), c_text(body))
