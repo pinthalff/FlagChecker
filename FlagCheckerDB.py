@@ -8,6 +8,8 @@
 
 # FlagCheckerDB.py
 
+# FlagCheckerDB.py
+
 from __future__ import annotations
 
 import logging
@@ -41,10 +43,13 @@ def _get_db_size(client, db_name: str) -> int:
 def _connect(url: str, db_name: str):
     client = MongoClient(
         url,
-        serverSelectionTimeoutMS = 5000,
-        connectTimeoutMS         = 5000,
-        socketTimeoutMS          = 10000,
-        retryWrites              = True,
+        serverSelectionTimeoutMS    = 5000,
+        connectTimeoutMS            = 5000,
+        socketTimeoutMS             = 10000,
+        retryWrites                 = True,
+        tls                         = True,
+        tlsAllowInvalidCertificates = True,
+        tlsAllowInvalidHostnames    = True,
     )
     client.admin.command("ping")
     return client, client[db_name]
@@ -69,9 +74,9 @@ class FlagCheckerDB:
     """
 
     def __init__(self):
-        self._member_conns  = []  # DBs 1-5
-        self._message_conns = []  # DBs 6-7
-        self._active_idx    = 0
+        self._member_conns   = []
+        self._message_conns  = []
+        self._active_idx     = 0
         self._active_msg_idx = 0
 
         member_slots = [
@@ -97,7 +102,6 @@ class FlagCheckerDB:
                 size_mb = _get_db_size(client, db_name) / 1024 / 1024
                 log.info("[FlagCheckerDB] Member DB %d connected — %s (%.1fMB)", i + 1, db_name, size_mb)
 
-                # Indexes
                 db["flagged_users"].create_index("user_id", unique=True)
                 db["seen_users"].create_index([("user_id", ASCENDING), ("guild_id", ASCENDING)], unique=True)
                 db["seen_users"].create_index("user_id")
@@ -121,7 +125,6 @@ class FlagCheckerDB:
                 size_mb = _get_db_size(client, db_name) / 1024 / 1024
                 log.info("[FlagCheckerDB] Message DB %d connected — %s (%.1fMB)", i + 6, db_name, size_mb)
 
-                # Indexes
                 db["messages"].create_index([("message_id", 1)], unique=True)
                 db["messages"].create_index("user_id")
                 db["messages"].create_index("guild_id")
@@ -200,7 +203,6 @@ class FlagCheckerDB:
 
     @property
     def all_cols(self):
-        """All seen_users collections — used by cogs_dbmanage."""
         return [db["seen_users"] for _, db, _ in self._member_conns]
 
     def close(self):
@@ -382,43 +384,79 @@ class FlagCheckerDB:
                 log.error("[FlagCheckerDB] get_previous_user: %s", e)
         return results
 
+    def _is_in_previous_users(self, user_id: int, guild_id) -> bool:
+        """
+        Check if a user exists in previous_users for a specific guild.
+        If they do — they left — override still_in_server to False.
+        """
+        guild_id_int = int(guild_id) if guild_id else None
+        if not guild_id_int:
+            return False
+        for db in self._all_member_dbs:
+            try:
+                doc = db["previous_users"].find_one(
+                    {"user_id": user_id, "guild_id": guild_id_int},
+                    projection={"_id": 1}
+                )
+                if doc:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def build_selfbot_report(self, user_id: int) -> dict:
         """
         Reads BOTH seen_users and previous_users.
-        seen_users      → still_in_server = True  → current
-        previous_users  → still_in_server = False → previous
-        Merges both into one guild list.
+        
+        Priority logic:
+        - If user exists in previous_users for a guild → still_in_server = False
+        - If user only in seen_users and still_in_server = True → current
+        - If user only in seen_users and still_in_server = False → previous
+        - If user only in previous_users → previous
+        
+        previous_users always wins over seen_users still_in_server field.
         """
         guilds      = []
         seen_guilds = set()
 
-        # ── Current members from seen_users ──
+        # ── Build set of guild IDs where user is in previous_users ──
+        # These are confirmed departed — always override to False
+        departed_guild_ids = set()
+        for doc in self.get_previous_user(user_id):
+            gid = str(doc.get("guild_id", ""))
+            if gid:
+                departed_guild_ids.add(gid)
+
+        # ── Read seen_users ──
         for doc in self.get_seen_user(user_id):
             gid = str(doc.get("guild_id", ""))
             if gid in seen_guilds:
                 continue
             seen_guilds.add(gid)
+
+            # If this guild is in previous_users — they left
+            # Override still_in_server regardless of what seen_users says
+            if gid in departed_guild_ids:
+                still_in_server = False
+            else:
+                still_in_server = doc.get("still_in_server", False)
+
             guilds.append({
                 "guild_id":        gid,
                 "guild_name":      doc.get("guild_name", "Unknown"),
                 "username":        doc.get("username", f"ID:{user_id}"),
                 "join_date":       doc.get("join_date", "unknown"),
                 "roles":           doc.get("roles", []),
-                "still_in_server": doc.get("still_in_server", True),
+                "still_in_server": still_in_server,
                 "message_count":   doc.get("message_count", 0),
                 "recent_messages": doc.get("messages", []),
                 "source":          "seen_users"
             })
 
-        # ── Previous members from previous_users ──
+        # ── Read previous_users — add guilds not already in seen_users ──
         for doc in self.get_previous_user(user_id):
             gid = str(doc.get("guild_id", ""))
             if gid in seen_guilds:
-                # Already have this guild from seen_users
-                # Update still_in_server to False if seen_users has wrong value
-                for g in guilds:
-                    if g["guild_id"] == gid:
-                        g["still_in_server"] = False
                 continue
             seen_guilds.add(gid)
             guilds.append({
@@ -473,7 +511,6 @@ class FlagCheckerDB:
     # ─────────────────────────────────────────────
 
     def get_messages(self, user_id: int, limit: int = 50) -> list:
-        """Reads messages from all message DBs merged."""
         results = []
         for db in self._all_message_dbs:
             try:
