@@ -12,6 +12,8 @@
 
 # FlagCheckerDB.py
 
+# FlagCheckerDB.py
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +26,22 @@ from pymongo import MongoClient, ASCENDING
 log = logging.getLogger("bot.db")
 
 DB_SIZE_LIMIT_BYTES = 460 * 1024 * 1024
+
+
+def _fmt_dt(dt) -> str:
+    """Formats a datetime or ISO string to readable format."""
+    if dt is None:
+        return "Unknown"
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except Exception:
+            return dt[:10] if len(dt) >= 10 else dt
+    try:
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return str(dt)[:16]
+
 
 def _bool_env(key: str, default: bool) -> bool:
     val = os.environ.get(key, "").strip().lower()
@@ -394,17 +412,22 @@ class FlagCheckerDB:
         Reads BOTH seen_users and previous_users.
         previous_users always wins — if a guild is in previous_users
         still_in_server is forced to False regardless of seen_users value.
+        Includes first_seen and last_seen per guild and overall.
         """
         guilds      = []
         seen_guilds = set()
 
-        # Build set of departed guild IDs from previous_users
-        # These always override still_in_server to False
-        departed_guild_ids = set()
+        # Build departed guild IDs + info from previous_users
+        departed_guild_ids          = set()
+        departed_info: dict[str, dict] = {}
         for doc in self.get_previous_user(user_id):
             gid = str(doc.get("guild_id", ""))
             if gid:
                 departed_guild_ids.add(gid)
+                departed_info[gid] = {
+                    "left_at":    doc.get("left_at"),
+                    "first_seen": doc.get("first_seen"),
+                }
 
         # ── Read seen_users ──
         for doc in self.get_seen_user(user_id):
@@ -413,11 +436,15 @@ class FlagCheckerDB:
                 continue
             seen_guilds.add(gid)
 
-            # previous_users always wins
+            # previous_users always wins for still_in_server
             if gid in departed_guild_ids:
                 still_in_server = False
+                last_seen       = departed_info[gid].get("left_at")
+                first_seen      = doc.get("first_seen") or departed_info[gid].get("first_seen")
             else:
                 still_in_server = doc.get("still_in_server", False)
+                last_seen       = doc.get("last_seen")
+                first_seen      = doc.get("first_seen")
 
             guilds.append({
                 "guild_id":        gid,
@@ -428,15 +455,18 @@ class FlagCheckerDB:
                 "still_in_server": still_in_server,
                 "message_count":   doc.get("message_count", 0),
                 "recent_messages": doc.get("messages", []),
+                "first_seen":      _fmt_dt(first_seen),
+                "last_seen":       _fmt_dt(last_seen),
                 "source":          "seen_users"
             })
 
-        # ── Read previous_users — guilds not in seen_users ──
+        # ── Read previous_users — guilds not already in seen_users ──
         for doc in self.get_previous_user(user_id):
             gid = str(doc.get("guild_id", ""))
             if gid in seen_guilds:
                 continue
             seen_guilds.add(gid)
+
             guilds.append({
                 "guild_id":        gid,
                 "guild_name":      doc.get("guild_name", "Unknown"),
@@ -446,16 +476,33 @@ class FlagCheckerDB:
                 "still_in_server": False,
                 "message_count":   0,
                 "recent_messages": [],
+                "first_seen":      _fmt_dt(doc.get("first_seen")),
+                "last_seen":       _fmt_dt(doc.get("left_at")),
                 "source":          "previous_users"
             })
 
         if not guilds:
             return {}
 
+        # ── Overall first seen and last seen across all guilds ──
+        all_first = [
+            g["first_seen"] for g in guilds
+            if g["first_seen"] and g["first_seen"] != "Unknown"
+        ]
+        all_last = [
+            g["last_seen"] for g in guilds
+            if g["last_seen"] and g["last_seen"] != "Unknown"
+        ]
+
+        overall_first_seen = min(all_first) if all_first else "Unknown"
+        overall_last_seen  = max(all_last)  if all_last  else "Unknown"
+
         return {
-            "user_id":       str(user_id),
-            "guilds":        guilds,
-            "total_servers": len(guilds)
+            "user_id":            str(user_id),
+            "guilds":             guilds,
+            "total_servers":      len(guilds),
+            "overall_first_seen": overall_first_seen,
+            "overall_last_seen":  overall_last_seen,
         }
 
     def save_previous_user(self, user_id: int, guild_id: int, guild_name: str,
