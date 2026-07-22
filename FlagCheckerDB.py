@@ -10,6 +10,8 @@
 
 # FlagCheckerDB.py
 
+# FlagCheckerDB.py
+
 from __future__ import annotations
 
 import logging
@@ -43,9 +45,9 @@ def _get_db_size(client, db_name: str) -> int:
 def _connect(url: str, db_name: str):
     client = MongoClient(
         url,
-        serverSelectionTimeoutMS    = 5000,
-        connectTimeoutMS            = 5000,
-        socketTimeoutMS             = 10000,
+        serverSelectionTimeoutMS    = 3000,
+        connectTimeoutMS            = 3000,
+        socketTimeoutMS             = 5000,
         retryWrites                 = True,
         tls                         = True,
         tlsAllowInvalidCertificates = True,
@@ -92,15 +94,17 @@ class FlagCheckerDB:
             (os.environ.get("FLAGDB_URL_7", ""), os.environ.get("FLAGDB_DB_7", "discord_messages")),
         ]
 
-        # ── Connect member DBs ──
+        # ── Connect member DBs 1-5 — log all slots ──
         for i, (url, db_name) in enumerate(member_slots):
+            slot = i + 1
             if not url or not db_name:
+                log.info("[FlagCheckerDB] Member DB %d — NOT CONNECTED (no env var set)", slot)
                 continue
             try:
                 client, db = _connect(url, db_name)
                 self._member_conns.append((client, db, db_name))
                 size_mb = _get_db_size(client, db_name) / 1024 / 1024
-                log.info("[FlagCheckerDB] Member DB %d connected — %s (%.1fMB)", i + 1, db_name, size_mb)
+                log.info("[FlagCheckerDB] Member DB %d — CONNECTED — %s (%.1fMB)", slot, db_name, size_mb)
 
                 db["flagged_users"].create_index("user_id", unique=True)
                 db["seen_users"].create_index([("user_id", ASCENDING), ("guild_id", ASCENDING)], unique=True)
@@ -113,24 +117,26 @@ class FlagCheckerDB:
                 db["roles"].create_index([("role_name", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 db["rocleaner"].create_index("user_id")
             except Exception as e:
-                log.warning("[FlagCheckerDB] Member DB %d failed: %s", i + 1, e)
+                log.info("[FlagCheckerDB] Member DB %d — NOT CONNECTED — %s", slot, e)
 
-        # ── Connect message DBs ──
+        # ── Connect message DBs 6-7 — log all slots ──
         for i, (url, db_name) in enumerate(message_slots):
+            slot = i + 6
             if not url or not db_name:
+                log.info("[FlagCheckerDB] Message DB %d — NOT CONNECTED (no env var set)", slot)
                 continue
             try:
                 client, db = _connect(url, db_name)
                 self._message_conns.append((client, db, db_name))
                 size_mb = _get_db_size(client, db_name) / 1024 / 1024
-                log.info("[FlagCheckerDB] Message DB %d connected — %s (%.1fMB)", i + 6, db_name, size_mb)
+                log.info("[FlagCheckerDB] Message DB %d — CONNECTED — %s (%.1fMB)", slot, db_name, size_mb)
 
                 db["messages"].create_index([("message_id", 1)], unique=True)
                 db["messages"].create_index("user_id")
                 db["messages"].create_index("guild_id")
                 db["messages"].create_index("sent_at")
             except Exception as e:
-                log.warning("[FlagCheckerDB] Message DB %d failed: %s", i + 6, e)
+                log.info("[FlagCheckerDB] Message DB %d — NOT CONNECTED — %s", slot, e)
 
         if not self._member_conns:
             raise RuntimeError("No MongoDB connections available — set FLAGDB_URL and FLAGDB_DB")
@@ -353,7 +359,6 @@ class FlagCheckerDB:
 
     # ─────────────────────────────────────────────
     # Seen users + Previous users
-    # build_selfbot_report reads BOTH and merges
     # ─────────────────────────────────────────────
 
     def get_seen_user(self, user_id: int) -> list:
@@ -384,43 +389,17 @@ class FlagCheckerDB:
                 log.error("[FlagCheckerDB] get_previous_user: %s", e)
         return results
 
-    def _is_in_previous_users(self, user_id: int, guild_id) -> bool:
-        """
-        Check if a user exists in previous_users for a specific guild.
-        If they do — they left — override still_in_server to False.
-        """
-        guild_id_int = int(guild_id) if guild_id else None
-        if not guild_id_int:
-            return False
-        for db in self._all_member_dbs:
-            try:
-                doc = db["previous_users"].find_one(
-                    {"user_id": user_id, "guild_id": guild_id_int},
-                    projection={"_id": 1}
-                )
-                if doc:
-                    return True
-            except Exception:
-                pass
-        return False
-
     def build_selfbot_report(self, user_id: int) -> dict:
         """
         Reads BOTH seen_users and previous_users.
-        
-        Priority logic:
-        - If user exists in previous_users for a guild → still_in_server = False
-        - If user only in seen_users and still_in_server = True → current
-        - If user only in seen_users and still_in_server = False → previous
-        - If user only in previous_users → previous
-        
-        previous_users always wins over seen_users still_in_server field.
+        previous_users always wins — if a guild is in previous_users
+        still_in_server is forced to False regardless of seen_users value.
         """
         guilds      = []
         seen_guilds = set()
 
-        # ── Build set of guild IDs where user is in previous_users ──
-        # These are confirmed departed — always override to False
+        # Build set of departed guild IDs from previous_users
+        # These always override still_in_server to False
         departed_guild_ids = set()
         for doc in self.get_previous_user(user_id):
             gid = str(doc.get("guild_id", ""))
@@ -434,8 +413,7 @@ class FlagCheckerDB:
                 continue
             seen_guilds.add(gid)
 
-            # If this guild is in previous_users — they left
-            # Override still_in_server regardless of what seen_users says
+            # previous_users always wins
             if gid in departed_guild_ids:
                 still_in_server = False
             else:
@@ -453,7 +431,7 @@ class FlagCheckerDB:
                 "source":          "seen_users"
             })
 
-        # ── Read previous_users — add guilds not already in seen_users ──
+        # ── Read previous_users — guilds not in seen_users ──
         for doc in self.get_previous_user(user_id):
             gid = str(doc.get("guild_id", ""))
             if gid in seen_guilds:
