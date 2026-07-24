@@ -1,5 +1,7 @@
 # detection.py
 
+# detection.py
+
 from __future__ import annotations
 import asyncio
 import json as _json
@@ -16,6 +18,8 @@ log = logging.getLogger("bot.detection")
 
 ROTECTOR_ACTIONABLE = {1, 2}
 
+RW_BASE = "https://api.robloxwatcher.com"
+
 
 async def _get(session, url, headers=None, params=None, timeout=10) -> dict:
     try:
@@ -24,24 +28,124 @@ async def _get(session, url, headers=None, params=None, timeout=10) -> dict:
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as r:
             if r.status == 429:
-                log.warning("Rate limited (429): %s", url); return {}
-            if r.status != 200:
-                log.warning("API %s returned %s", url, r.status); return {}
+                # Check for edge block (HTML body no code field)
+                ct = r.headers.get("Content-Type", "")
+                if "html" in ct:
+                    retry = int(r.headers.get("Retry-After", 10))
+                    log.warning("Edge rate limit (HTML 429): %s — wait %ds", url, retry)
+                    return {"_edge_block": True, "_retry_after": retry}
+                try:
+                    data = await r.json()
+                    code = data.get("code", "")
+                    if code == "daily_quota_exceeded":
+                        log.warning("Daily quota exceeded: %s", url)
+                    else:
+                        retry = int(r.headers.get("Retry-After", 10))
+                        log.warning("Rate limited (429) code=%s: %s — wait %ds", code, url, retry)
+                except Exception:
+                    pass
+                return {}
+            if r.status == 503:
+                retry = int(r.headers.get("Retry-After", 5))
+                log.warning("Server busy (503): %s — wait %ds", url, retry)
+                return {}
+            if r.status not in (200, 201):
+                log.warning("API %s returned %s", url, r.status)
+                return {}
             ct = r.headers.get("Content-Type", "")
             if "html" in ct:
-                log.warning("HTML response (Cloudflare?) from %s", url); return {}
+                log.warning("HTML response (Cloudflare?) from %s", url)
+                return {}
             try:
                 text = await r.text()
                 if text.strip().startswith("<"):
-                    log.warning("Got HTML instead of JSON from %s", url); return {}
+                    log.warning("Got HTML instead of JSON from %s", url)
+                    return {}
                 return _json.loads(text)
             except Exception as exc:
-                log.error("JSON parse error %s: %s", url, exc); return {}
+                log.error("JSON parse error %s: %s", url, exc)
+                return {}
     except asyncio.TimeoutError:
-        log.error("Timeout: %s", url); return {}
+        log.error("Timeout: %s", url)
+        return {}
     except Exception as exc:
-        log.error("Error %s: %s", url, exc); return {}
+        log.error("Error %s: %s", url, exc)
+        return {}
 
+
+async def _post(session, url, headers=None, json=None, timeout=15) -> dict | list:
+    try:
+        async with session.post(
+            url, headers=headers or {}, json=json or {},
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as r:
+            if r.status == 429:
+                ct = r.headers.get("Content-Type", "")
+                if "html" in ct:
+                    retry = int(r.headers.get("Retry-After", 10))
+                    log.warning("Edge rate limit (HTML 429): %s — wait %ds", url, retry)
+                    return []
+                log.warning("Rate limited (429): %s", url)
+                return []
+            if r.status == 503:
+                retry = int(r.headers.get("Retry-After", 5))
+                log.warning("Server busy (503): %s — wait %ds", url, retry)
+                return []
+            if r.status not in (200, 201):
+                log.warning("API %s returned %s", url, r.status)
+                return []
+            try:
+                text = await r.text()
+                if text.strip().startswith("<"):
+                    log.warning("Got HTML instead of JSON from %s", url)
+                    return []
+                return _json.loads(text)
+            except Exception as exc:
+                log.error("JSON parse error %s: %s", url, exc)
+                return []
+    except asyncio.TimeoutError:
+        log.error("Timeout: %s", url)
+        return []
+    except Exception as exc:
+        log.error("Error %s: %s", url, exc)
+        return []
+
+
+# ─────────────────────────────────────────────
+# RobloxWatcher — new API
+# ─────────────────────────────────────────────
+
+async def _fetch_robloxwatcher(session, discord_id: str) -> dict:
+    key = config.ROBLOXWATCHER_API_KEY
+    if not key:
+        return {}
+    return await _get(
+        session,
+        f"{RW_BASE}/api/v1/robloxwatcher/search/{discord_id}",
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=15,
+    )
+
+
+# ─────────────────────────────────────────────
+# ExploitWatcher — new API separate EW_ key
+# ─────────────────────────────────────────────
+
+async def _fetch_exploitwatcher(session, discord_id: str) -> dict:
+    key = config.EXPLOITWATCHER_API_KEY
+    if not key:
+        return {}
+    return await _get(
+        session,
+        f"{RW_BASE}/api/v1/exploitwatcher/search/{discord_id}",
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=15,
+    )
+
+
+# ─────────────────────────────────────────────
+# Other APIs
+# ─────────────────────────────────────────────
 
 async def _fetch_tase(session, discord_id: str) -> dict:
     return await _get(session, f"https://api.tasebot.org/v2/check/{discord_id}",
@@ -58,23 +162,6 @@ async def _fetch_bloxycleaner_exp(session, discord_id: str) -> dict:
     data  = await _get(session, f"{config.BLOXYCLEANER_BASE}/p/api/v1/exp/lookup",
                        {"Authorization": token}, {"userid": discord_id}, timeout=20)
     return data.get("users", {}).get(str(discord_id), {})
-
-async def _fetch_robloxwatcher(session, user_id: str) -> dict:
-    return await _get(session,
-        "https://robloxwatcher.info/checker/api/check.php",
-        params={"id": user_id, "key": config.ROBLOXWATCHER_API_KEY})
-
-async def _fetch_exploitwatcher(session, user_id: str) -> dict:
-    """
-    ExploitWatcher — separate API key from RobloxWatcher.
-    Same domain, different key, returns exploit server data.
-    """
-    key = config.EXPLOITWATCHER_API_KEY
-    if not key:
-        return {}
-    return await _get(session,
-        "https://robloxwatcher.info/checker/api/check.php",
-        params={"id": user_id, "key": key})
 
 async def _fetch_rotector_discord(session, discord_id: str) -> dict:
     return await _get(session,
@@ -100,7 +187,6 @@ async def _fetch_roblox_username(session, user_id: str) -> Optional[str]:
     data = await _get(session, f"https://users.roblox.com/v1/users/{user_id}")
     return data.get("name") or data.get("displayName")
 
-
 async def _fetch_selfbot(session, discord_id: str) -> dict:
     url     = getattr(config, "SELFBOT_API_URL", "") or ""
     key     = getattr(config, "SELFBOT_API_KEY", "") or ""
@@ -124,6 +210,83 @@ async def _fetch_selfbot(session, discord_id: str) -> dict:
     except Exception as exc:
         log.error("[Selfbot] Error: %s", exc)
         return {}
+
+
+# ─────────────────────────────────────────────
+# Guild parser — shared between RW and EW
+# ─────────────────────────────────────────────
+
+def _parse_guild(g: dict) -> dict:
+    """
+    Parses a guild object from the new RW/EW API response
+    into the format used by correlate functions.
+    """
+    activity   = g.get("activity") or {}
+    membership = g.get("membership") or {}
+    roles      = g.get("roles") or []
+    guild_types = [t.get("name", "") for t in g.get("guildTypes") or []]
+    guild_flags = g.get("guildFlags") or []
+
+    # Calculate last_seen as unix timestamp for sorting
+    last_seen_raw = g.get("lastSeen") or g.get("lastActivity")
+    last_seen_ts  = None
+    if last_seen_raw:
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(last_seen_raw.replace("Z", "+00:00"))
+            last_seen_ts = int(dt.timestamp())
+        except Exception:
+            pass
+
+    return {
+        "id":           g.get("id"),
+        "name":         g.get("name", "Unknown Server"),
+        "sources":      [],  # filled by caller
+        "last_seen":    last_seen_ts,
+        "score":        g.get("score", 0),
+        "guild_types":  guild_types,
+        "guild_flags":  guild_flags,
+        "first_seen":   g.get("firstSeen"),
+        "last_seen_iso": g.get("lastSeen"),
+        "last_activity": g.get("lastActivity"),
+        "estimated_join": g.get("estimatedJoin"),
+        "guild_joins":  g.get("guildJoins") or [],
+        "guild_leaves": g.get("guildLeaves") or [],
+        "activity": {
+            "messages":  activity.get("messages", 0),
+            "typing":    activity.get("typing", 0),
+            "reactions": activity.get("reactions", 0),
+            "vc_joins":  activity.get("vcJoins", 0),
+            "vc_leaves": activity.get("vcLeaves", 0),
+            "boosts":    activity.get("boosts", 0),
+        },
+        "roles": [
+            {
+                "id":          r.get("id"),
+                "name":        r.get("name"),
+                "permissions": r.get("permissions") or [],
+                "type":        r.get("type"),
+            }
+            for r in roles
+        ],
+        "membership": {
+            "owner":               membership.get("owner", False),
+            "staff":               membership.get("staff", False),
+            "all_time_permissions": membership.get("allTimePermissions") or [],
+            # RW specific
+            "uploader":            membership.get("uploader", False),
+            "rr34_creator":        membership.get("rr34Creator", False),
+            "content_creator":     membership.get("contentCreator", False),
+            "age_verified":        membership.get("ageVerified", False),
+            "supporter":           membership.get("supporter", False),
+            # EW specific
+            "developer":           membership.get("developer", False),
+            "tester":              membership.get("tester", False),
+            "buyer":               membership.get("buyer", False),
+            "reseller":            membership.get("reseller", False),
+        },
+        "detection_version": g.get("detectionVersion", 1),
+    }
 
 
 def _safe_ts(val) -> Optional[int]:
@@ -172,12 +335,28 @@ def _merge_server(by_key: dict, name_index: dict, server: dict, source: str) -> 
     name  = server.get("name") or server.get("serverName") or "Unknown"
     nlow  = name.lower()
     key   = str(sid) if sid else name_index.get(nlow, nlow)
-    entry = by_key.setdefault(key, {"id": sid, "name": name, "sources": [], "last_seen": None})
+    entry = by_key.setdefault(key, {
+        "id":          sid,
+        "name":        name,
+        "sources":     [],
+        "last_seen":   None,
+        "score":       0,
+        "guild_types": server.get("guild_types", []),
+        "guild_flags": server.get("guild_flags", []),
+        "activity":    server.get("activity", {}),
+        "roles":       server.get("roles", []),
+        "membership":  server.get("membership", {}),
+        "first_seen":  server.get("first_seen"),
+        "last_seen_iso": server.get("last_seen_iso"),
+        "last_activity": server.get("last_activity"),
+    })
     if sid and entry.get("id") is None:
         entry["id"] = sid
     name_index.setdefault(nlow, key)
     if source not in entry["sources"]: entry["sources"].append(source)
-    ts = _safe_ts(server.get("lastSeen") or server.get("updatedAt") or server.get("firstSeenAt"))
+    ts = server.get("last_seen") or _safe_ts(
+        server.get("lastSeen") or server.get("updatedAt") or server.get("firstSeenAt")
+    )
     if ts is not None and (entry["last_seen"] is None or ts > entry["last_seen"]):
         entry["last_seen"] = ts
 
@@ -198,7 +377,6 @@ def correlate_exploit_servers(agg: AggregateResult) -> list[dict]:
     name_index: dict = {}
     for s in agg.rw_exploit_servers:           _merge_server(by_key, name_index, s, "RobloxWatcher")
     for s in agg.bloxycleaner_exploit_servers: _merge_server(by_key, name_index, s, "BloxyCleaner")
-    # ExploitWatcher servers merged into exploits
     for s in agg.ew_exploit_servers:           _merge_server(by_key, name_index, s, "ExploitWatcher")
     return sorted(by_key.values(), key=lambda x: x["last_seen"] or 0, reverse=True)
 
@@ -255,7 +433,7 @@ class DetectionService:
                 checked.append("BloxyCleaner")
                 jobs.append(("bc_erp", _fetch_bloxycleaner_erp(sess, user_id)))
                 jobs.append(("bc_exp", _fetch_bloxycleaner_exp(sess, user_id)))
-            if "ROBLOXWATCHER" not in disabled_apis:
+            if "ROBLOXWATCHER" not in disabled_apis and config.ROBLOXWATCHER_API_KEY:
                 checked.append("RobloxWatcher")
                 jobs.append(("rw", _fetch_robloxwatcher(sess, user_id)))
             if "EXPLOITWATCHER" not in disabled_apis and config.EXPLOITWATCHER_API_KEY:
@@ -308,20 +486,47 @@ class DetectionService:
                     agg.sources_flagged.append("BloxyCleaner")
 
             elif key == "rw" and res:
-                agg.rw_condo_servers   = res.get("roblox_servers") or res.get("condo_servers") or []
-                agg.rw_exploit_servers = res.get("exploit_servers") or []
-                agg.rw_condo_count     = len(agg.rw_condo_servers)
-                agg.rw_exploit_count   = len(agg.rw_exploit_servers)
-                if agg.rw_condo_count or agg.rw_exploit_count:
+                # New RobloxWatcher API response
+                agg.rw_flagged     = res.get("flagged", False)
+                agg.rw_total_score = res.get("totalScore", 0.0)
+                agg.rw_roblox_ids  = res.get("robloxIds", [])
+                raw_guilds         = res.get("guilds", [])
+                agg.rw_guilds      = raw_guilds
+
+                # Split into condo vs other based on guildTypes
+                # All RW guilds go into condo_servers for correlate_condo_servers
+                condo_servers = []
+                for g in raw_guilds:
+                    parsed = _parse_guild(g)
+                    parsed["sources"] = ["RobloxWatcher"]
+                    condo_servers.append(parsed)
+
+                agg.rw_condo_servers = condo_servers
+                agg.rw_condo_count   = len(condo_servers)
+                agg.rw_exploit_count = 0
+                agg.rw_exploit_servers = []
+
+                if agg.rw_flagged:
                     agg.sources_flagged.append("RobloxWatcher")
 
             elif key == "ew" and res:
-                # ExploitWatcher — separate key, exploit servers only
-                ew_exploit = res.get("exploit_servers") or []
-                agg.ew_exploit_servers = ew_exploit
-                agg.ew_exploit_count   = len(ew_exploit)
-                agg.ew_flagged         = agg.ew_exploit_count > 0
-                if agg.ew_flagged and "ExploitWatcher" not in agg.sources_flagged:
+                # New ExploitWatcher API response
+                agg.ew_flagged     = res.get("flagged", False)
+                agg.ew_total_score = res.get("totalScore", 0.0)
+                agg.ew_roblox_ids  = res.get("robloxIds", [])
+                raw_guilds         = res.get("guilds", [])
+                agg.ew_guilds      = raw_guilds
+
+                exploit_servers = []
+                for g in raw_guilds:
+                    parsed = _parse_guild(g)
+                    parsed["sources"] = ["ExploitWatcher"]
+                    exploit_servers.append(parsed)
+
+                agg.ew_exploit_servers = exploit_servers
+                agg.ew_exploit_count   = len(exploit_servers)
+
+                if agg.ew_flagged:
                     agg.sources_flagged.append("ExploitWatcher")
 
             elif key == "rotector_discord" and res:
