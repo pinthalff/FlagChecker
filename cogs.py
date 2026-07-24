@@ -17,6 +17,8 @@
 
 # cogs.py
 
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -39,8 +41,8 @@ from v2 import (
     send_v2, edit_v2,
     c_text, c_sep, c_section, c_container,
     build_check_overview, build_check_condos, build_check_exploits,
-    build_check_accounts, build_check_profile, build_check_details,
-    build_lookup_main, build_lookup_exploit, build_lookup_profile, build_lookup_accounts,
+    build_check_accounts,
+    build_lookup_main, build_lookup_exploit, build_lookup_accounts,
     PAGE_SIZE_CONDOS, PAGE_SIZE_EXPLOITS,
 )
 
@@ -104,7 +106,6 @@ def _build_scraped_inline(agg: AggregateResult) -> str:
     """
     Returns scraped server presence as inline text
     injected into the Exploits section.
-    No separate Scraped Servers section.
     """
     guilds = getattr(agg, "selfbot_guilds", []) or []
     active = getattr(agg, "selfbot_active_guilds", []) or []
@@ -141,7 +142,7 @@ def _build_scraped_inline(agg: AggregateResult) -> str:
 def _build_roles_v2(gd: dict) -> dict:
     """
     Builds the roles embed for a scraped guild.
-    Reads roles from DB data — the selfbot saves roles[] per seen_users doc.
+    Reads roles from DB data.
     """
     guild_name    = gd.get("guild_name", "Unknown")
     roles         = gd.get("roles", [])
@@ -156,7 +157,6 @@ def _build_roles_v2(gd: dict) -> dict:
     except Exception:
         jd = "unknown"
 
-    # Handle both list-of-dicts and list-of-strings from DB
     if roles:
         role_lines = "\n".join(_fmt_role(r) for r in roles)
     else:
@@ -177,11 +177,8 @@ def _build_roles_v2(gd: dict) -> dict:
 def _build_messages_v2(gd: dict) -> dict:
     guild_name    = gd.get("guild_name", "Unknown")
     still_present = gd.get("still_in_server") is True
-    join_date     = gd.get("join_date", "unknown")
     status        = "Current" if still_present else "Previous"
 
-    # ── Messages not activated yet ──
-    # Wire this up when selfbot message logging is reliable
     body = (
         f"**{guild_name}**\n"
         f"Status: {status}\n"
@@ -199,7 +196,6 @@ def _build_messages_v2(gd: dict) -> dict:
 class _SelfbotRolesSelect(discord.ui.Select):
     def __init__(self, guilds: list, invoker_id: int, row: int = 0):
         self.invoker_id  = invoker_id
-        # Key by guild_id — handle duplicate guild_ids with index fallback
         self._guilds_map = {}
         for i, g in enumerate(guilds):
             key = str(g.get("guild_id", str(i)))
@@ -294,14 +290,14 @@ class _MessagesBtn(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.invoker_id:
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
-        # Messages not activated yet — always show this regardless of guild count
+        # Always return this — messages not activated yet
         return await interaction.response.send_message(
             "This is not activated by the bot owner yet.",
             ephemeral=True
         )
 
 
-# ── Events ─────────────────────────────────────────────────────────────────
+# ── Events ──────────────────────────────────────────────────────────────────
 
 class EventsCog(commands.Cog):
     def __init__(self, bot) -> None:
@@ -360,7 +356,7 @@ class EventsCog(commands.Cog):
         except discord.HTTPException: pass
 
 
-# ── Nav buttons ────────────────────────────────────────────────────────────
+# ── Nav buttons ──────────────────────────────────────────────────────────────
 
 class _NavBtn(discord.ui.Button):
     def __init__(self, label, invoker_id, view_ref, delta, row):
@@ -474,7 +470,6 @@ class _CheckView(discord.ui.View):
         if s == "condos":
             return build_check_condos(self.agg, self.extra, self.page)
         if s == "exploits":
-            # Build exploits then inject scraped servers at the bottom
             result       = build_check_exploits(self.agg, self.extra, self.page)
             scraped_text = _build_scraped_inline(self.agg)
             if scraped_text and result and "components" in result:
@@ -484,9 +479,8 @@ class _CheckView(discord.ui.View):
                 except Exception:
                     pass
             return result
-        if s == "accounts":  return build_check_accounts(self.agg)
-        if s == "profile":   return build_check_profile(self.agg)
-        if s == "details":   return build_check_details(self.agg)
+        if s == "accounts":
+            return build_check_accounts(self.agg)
         return build_check_overview(self.user, self.agg, self.extra)
 
     async def do_edit(self, interaction):
@@ -501,8 +495,6 @@ class _CheckSelect(discord.ui.Select):
             options = [
                 discord.SelectOption(label="Overview",  value="overview"),
                 discord.SelectOption(label="Accounts",  value="accounts"),
-                discord.SelectOption(label="Details",   value="details"),
-                discord.SelectOption(label="Profile",   value="profile"),
             ]
         else:
             options = [
@@ -510,10 +502,7 @@ class _CheckSelect(discord.ui.Select):
                 discord.SelectOption(label="Condos",    value="condos"),
                 discord.SelectOption(label="Exploits",  value="exploits"),
                 discord.SelectOption(label="Accounts",  value="accounts"),
-                discord.SelectOption(label="Profile",   value="profile"),
-                discord.SelectOption(label="Details",   value="details"),
             ]
-            # No separate Scraped Servers — lives under Exploits
 
         super().__init__(placeholder="Select section", options=options, row=0)
         self.view_ref = view_ref
@@ -609,7 +598,6 @@ class _LookupView(discord.ui.View):
             build_lookup_main(self.user, self.agg, self.extra, self.page),
             build_lookup_exploit(self.user, self.agg, self.extra),
             build_lookup_accounts(self.user, self.agg),
-            build_lookup_profile(self.user, self.agg),
         ]
         return [c for c in cards if c is not None]
 
