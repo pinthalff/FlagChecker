@@ -19,14 +19,22 @@ class AggregateResult:
     tase_nsfw_records:       list            = field(default_factory=list)
     tase_guilds_count:       int             = 0
 
-    # RobloxWatcher
+    # RobloxWatcher — new API
+    rw_flagged:              bool            = False
+    rw_total_score:          float           = 0.0
+    rw_guilds:               list            = field(default_factory=list)
+    rw_roblox_ids:           list            = field(default_factory=list)
+    # Keep these for backwards compat with correlate functions
     rw_condo_servers:        list            = field(default_factory=list)
     rw_exploit_servers:      list            = field(default_factory=list)
     rw_condo_count:          int             = 0
     rw_exploit_count:        int             = 0
 
-    # ExploitWatcher — separate API key, same robloxwatcher domain
+    # ExploitWatcher — new API separate EW_ key
     ew_flagged:              bool            = False
+    ew_total_score:          float           = 0.0
+    ew_guilds:               list            = field(default_factory=list)
+    ew_roblox_ids:           list            = field(default_factory=list)
     ew_exploit_servers:      list            = field(default_factory=list)
     ew_exploit_count:        int             = 0
 
@@ -80,8 +88,7 @@ class AggregateResult:
     def is_empty(self) -> bool:
         return (
             not self.tase_guilds_count
-            and not self.rw_condo_count
-            and not self.rw_exploit_count
+            and not self.rw_flagged
             and not self.ew_flagged
             and self.rotector_flag_type in (None, 0)
             and not self.bloxycleaner_flagged
