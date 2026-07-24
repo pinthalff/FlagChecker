@@ -1,3 +1,5 @@
+# v2.py
+
 from __future__ import annotations
 import math
 from typing import Optional
@@ -159,6 +161,9 @@ def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dic
     stats  = f"Total Records: `{len(condos) + len(exploits)}`\n"
     stats += f"Condo Records: `{len(condos)}`\n"
     stats += f"Exploit Records: `{len(exploits)}`\n"
+    # ExploitWatcher specific count
+    if agg.ew_flagged:
+        stats += f"ExploitWatcher: `{agg.ew_exploit_count}` server(s)\n"
     stats += f"\nFlagged: {'Yes' if agg.sources_flagged else 'No'}"
     if extra and agg.sources_flagged:
         stats += f" — {', '.join(agg.sources_flagged)}"
@@ -211,7 +216,13 @@ def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 
     total       = len(exploits)
     total_pages = max(1, math.ceil(total / PAGE_SIZE_EXPLOITS))
     page_data   = exploits[page * PAGE_SIZE_EXPLOITS:(page + 1) * PAGE_SIZE_EXPLOITS]
-    header      = f"Total Records: `{total}`"
+
+    # Show ExploitWatcher count separately in header if flagged
+    ew_note = ""
+    if agg.ew_flagged:
+        ew_note = f" · ExploitWatcher: `{agg.ew_exploit_count}`"
+
+    header = f"Total Records: `{total}`{ew_note}"
     if page_data:
         lines = [_server_line(s, extra) for s in page_data]
         body  = "\n\n".join(lines) + f"\n\n-# Page {page+1}/{total_pages} · Servers: {total}"
@@ -272,7 +283,11 @@ def build_lookup_main(user, agg: AggregateResult, extra: bool = False, page: int
         conf = agg.rotector_confidence or 0
         rotector_line = f"\nRotector: {flag} · Confidence: `{conf:.1f}%`"
 
-    header = f"## {name}\n{uid_line}\nLast Seen: `{last_seen}`{rotector_line}"
+    ew_line = ""
+    if agg.ew_flagged:
+        ew_line = f"\nExploitWatcher: `{agg.ew_exploit_count}` exploit server(s)"
+
+    header = f"## {name}\n{uid_line}\nLast Seen: `{last_seen}`{rotector_line}{ew_line}"
     badges = _score_badges(agg.tase_score_breakdown)
     if badges: header += f"\n\n{badges}"
 
@@ -344,6 +359,9 @@ def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dic
     if total:
         sources = sorted({src for s in exploits for src in s.get("sources", [])})
         head    = f"## Detected in {' / '.join(sources)}:"
+        # Add ExploitWatcher note if flagged
+        if agg.ew_flagged:
+            head += f"\n-# ExploitWatcher: {agg.ew_exploit_count} exploit server(s)"
         lines   = [_server_line(s, extra) for s in exploits]
         note    = f"\n\n-# Data is a snapshot, not live.\n-# Page 1/1 · Servers: {total}"
         inner   = [c_text(head), c_sep(), c_text("\n".join(lines) + note)]
