@@ -21,6 +21,8 @@
 
 # cogs.py
 
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -41,6 +43,7 @@ from embeds import (
 )
 from v2 import (
     send_v2, edit_v2,
+    FLAG_V2, FLAG_EPHEMERAL,
     c_text, c_sep, c_container,
     build_check_overview, build_check_condos, build_check_exploits,
     build_check_accounts,
@@ -182,7 +185,18 @@ class _SelfbotRolesSelect(discord.ui.Select):
         gd = self._guilds_map.get(self.values[0])
         if not gd:
             return await interaction.response.send_message("No data.", ephemeral=True)
-        await send_v2(interaction, _build_roles_v2(gd), ephemeral=True)
+        # Defer first to avoid timeout then send via webhook
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        comp  = _build_roles_v2(gd)
+        route = discord.http.Route(
+            "POST", "/webhooks/{application_id}/{interaction_token}",
+            application_id=interaction.application_id,
+            interaction_token=interaction.token,
+        )
+        await interaction.client.http.request(route, json={
+            "flags":      FLAG_V2 | FLAG_EPHEMERAL,
+            "components": [comp],
+        })
 
 
 class _SelfbotMessagesSelect(discord.ui.Select):
@@ -215,7 +229,10 @@ class _SelfbotMessagesSelect(discord.ui.Select):
         gd = self._guilds_map.get(self.values[0])
         if not gd:
             return await interaction.response.send_message("No data.", ephemeral=True)
-        await send_v2(interaction, _build_messages_v2(gd), ephemeral=True)
+        await interaction.response.send_message(
+            "This is not activated by the bot owner yet.",
+            ephemeral=True
+        )
 
 
 # ─────────────────────────────────────────────
@@ -233,9 +250,22 @@ class _RolesBtn(discord.ui.Button):
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
         if not self.guilds:
             return await interaction.response.send_message("No scraped data.", ephemeral=True)
+
         if len(self.guilds) == 1:
-            await send_v2(interaction, _build_roles_v2(self.guilds[0]), ephemeral=True)
+            # Defer immediately to avoid timeout then send via webhook
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            comp  = _build_roles_v2(self.guilds[0])
+            route = discord.http.Route(
+                "POST", "/webhooks/{application_id}/{interaction_token}",
+                application_id=interaction.application_id,
+                interaction_token=interaction.token,
+            )
+            await interaction.client.http.request(route, json={
+                "flags":      FLAG_V2 | FLAG_EPHEMERAL,
+                "components": [comp],
+            })
         else:
+            # Show server picker — respond immediately
             view = discord.ui.View(timeout=120)
             view.add_item(_SelfbotRolesSelect(self.guilds, self.invoker_id, row=0))
             await interaction.response.send_message("Pick a server:", view=view, ephemeral=True)
