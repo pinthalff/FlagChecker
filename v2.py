@@ -4,6 +4,8 @@
 
 # v2.py
 
+# v2.py
+
 from __future__ import annotations
 import math
 from typing import Optional
@@ -104,14 +106,16 @@ def _server_line(s: dict, extra: bool) -> str:
     if s.get("id"):      line += f" (`{s['id']}`)"
     line += status
     if extra and s.get("sources"): line += f" — `{', '.join(s['sources'])}`"
-    if extra and s.get("guild_types"):
+
+    # Always show type and activity — not gated on extra
+    if s.get("guild_types"):
         line += f"\n  ↳ Type: `{', '.join(s['guild_types'])}`"
     if s.get("guild_flags"):
         line += f"\n  ↳ Flags: `{', '.join(s['guild_flags'])}`"
     if s.get("score"):
         line += f"\n  ↳ Score: `{s['score']}`"
     act = s.get("activity", {})
-    if act and any(act.values()) and extra:
+    if act and any(act.values()):
         parts = []
         if act.get("messages"):  parts.append(f"{act['messages']} msgs")
         if act.get("reactions"): parts.append(f"{act['reactions']} reactions")
@@ -198,11 +202,6 @@ def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dic
     stats  = f"Total Records: `{len(condos) + len(exploits)}`\n"
     stats += f"Condo Records: `{len(condos)}`\n"
     stats += f"Exploit Records: `{len(exploits)}`\n"
-
-    # ExploitWatcher count only — no score on overview
-    if agg.ew_flagged:
-        stats += f"ExploitWatcher: `{agg.ew_exploit_count}` server(s)\n"
-
     stats += f"\nFlagged: {'Yes' if agg.sources_flagged else 'No'}"
     if extra and agg.sources_flagged:
         stats += f" — {', '.join(agg.sources_flagged)}"
@@ -220,7 +219,6 @@ def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dic
     if extra and agg.sources_checked:
         stats += f"\nAPIs Checked: `{', '.join(agg.sources_checked)}`"
 
-    # Linked Roblox IDs from RW/EW
     roblox_ids = list({*agg.rw_roblox_ids, *agg.ew_roblox_ids})
     if roblox_ids:
         stats += f"\nLinked Roblox IDs: `{'`, `'.join(roblox_ids)}`"
@@ -263,7 +261,6 @@ def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 
     total_pages = max(1, math.ceil(total / PAGE_SIZE_EXPLOITS))
     page_data   = exploits[page * PAGE_SIZE_EXPLOITS:(page + 1) * PAGE_SIZE_EXPLOITS]
 
-    # Score shown here on exploits page only
     ew_note = ""
     if agg.ew_flagged:
         ew_note = f" · ExploitWatcher Score: `{agg.ew_total_score}`"
