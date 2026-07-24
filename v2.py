@@ -6,6 +6,8 @@
 
 # v2.py
 
+# v2.py
+
 from __future__ import annotations
 import math
 from typing import Optional
@@ -95,25 +97,34 @@ def _score_badges(breakdown: dict) -> str:
 
 
 def _server_line(s: dict, extra: bool) -> str:
-    still_in = s.get("still_in")
-    status   = ""
-    if still_in is True:
-        status = " — `Current`"
-    elif still_in is False:
-        status = " — `Previous`"
+    sources    = s.get("sources", [])
+    is_selfbot = "Selfbot" in sources
+    still_in   = s.get("still_in")
 
     line = f"• **{s['name']}**"
-    if s.get("id"):      line += f" (`{s['id']}`)"
-    line += status
-    if extra and s.get("sources"): line += f" — `{', '.join(s['sources'])}`"
+    if s.get("id"): line += f" (`{s['id']}`)"
 
-    # Always show type and activity — not gated on extra
-    if s.get("guild_types"):
+    # Current/Previous only on selfbot servers
+    if is_selfbot and still_in is True:
+        line += " — `Current`"
+    elif is_selfbot and still_in is False:
+        line += " — `Previous`"
+
+    if extra and sources:
+        line += f" — `{', '.join(sources)}`"
+
+    # Type only when extra=True
+    if extra and s.get("guild_types"):
         line += f"\n  ↳ Type: `{', '.join(s['guild_types'])}`"
+
     if s.get("guild_flags"):
         line += f"\n  ↳ Flags: `{', '.join(s['guild_flags'])}`"
+
+    # Score always shown when non-zero
     if s.get("score"):
         line += f"\n  ↳ Score: `{s['score']}`"
+
+    # Activity always shown when present
     act = s.get("activity", {})
     if act and any(act.values()):
         parts = []
@@ -261,11 +272,7 @@ def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 
     total_pages = max(1, math.ceil(total / PAGE_SIZE_EXPLOITS))
     page_data   = exploits[page * PAGE_SIZE_EXPLOITS:(page + 1) * PAGE_SIZE_EXPLOITS]
 
-    ew_note = ""
-    if agg.ew_flagged:
-        ew_note = f" · ExploitWatcher Score: `{agg.ew_total_score}`"
-
-    header = f"Total Records: `{total}`{ew_note}"
+    header = f"Total Records: `{total}`"
     if page_data:
         lines = [_server_line(s, extra) for s in page_data]
         body  = "\n\n".join(lines) + f"\n\n-# Page {page+1}/{total_pages} · Servers: {total}"
@@ -414,8 +421,6 @@ def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dic
     if total:
         sources = sorted({src for s in exploits for src in s.get("sources", [])})
         head    = f"## Detected in {' / '.join(sources)}:"
-        if agg.ew_flagged:
-            head += f"\n-# ExploitWatcher: {agg.ew_exploit_count} server(s) · Score: {agg.ew_total_score}"
         lines   = [_server_line(s, extra) for s in exploits]
         note    = f"\n\n-# Data is a snapshot, not live.\n-# Page 1/1 · Servers: {total}"
         inner   = [c_text(head), c_sep(), c_text("\n".join(lines) + note)]
