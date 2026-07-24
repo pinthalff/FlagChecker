@@ -1,5 +1,7 @@
 # v2.py
 
+# v2.py
+
 from __future__ import annotations
 import math
 from typing import Optional
@@ -92,6 +94,25 @@ def _server_line(s: dict, extra: bool) -> str:
     line = f"• **{s['name']}**"
     if s.get("id"):      line += f" (`{s['id']}`)"
     if extra and s.get("sources"): line += f" — `{', '.join(s['sources'])}`"
+    # Show guild types if available
+    if extra and s.get("guild_types"):
+        line += f"\n  ↳ Type: `{', '.join(s['guild_types'])}`"
+    # Show guild flags if any
+    if s.get("guild_flags"):
+        line += f"\n  ↳ Flags: `{', '.join(s['guild_flags'])}`"
+    # Show score if available
+    if s.get("score"):
+        line += f"\n  ↳ Score: `{s['score']}`"
+    # Show activity if available
+    act = s.get("activity", {})
+    if act and any(act.values()):
+        parts = []
+        if act.get("messages"):  parts.append(f"{act['messages']} msgs")
+        if act.get("reactions"): parts.append(f"{act['reactions']} reactions")
+        if act.get("vc_joins"):  parts.append(f"{act['vc_joins']} vc joins")
+        if act.get("boosts"):    parts.append(f"{act['boosts']} boosts")
+        if parts and extra:
+            line += f"\n  ↳ Activity: `{', '.join(parts)}`"
     return line
 
 
@@ -118,10 +139,14 @@ def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
         name = g.get("guild_name", "Unknown")
         if name.lower() not in existing_names:
             exploits.append({
-                "name":      name,
-                "id":        str(g.get("guild_id", "")),
-                "sources":   ["Selfbot"],
-                "last_seen": None,
+                "name":        name,
+                "id":          str(g.get("guild_id", "")),
+                "sources":     ["Selfbot"],
+                "last_seen":   None,
+                "score":       0,
+                "guild_types": [],
+                "guild_flags": [],
+                "activity":    {},
             })
             existing_names.add(name.lower())
 
@@ -129,10 +154,14 @@ def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
         name = g.get("guild_name", "Unknown")
         if name.lower() not in existing_names:
             exploits.append({
-                "name":      f"(Previous Server) {name}",
-                "id":        str(g.get("guild_id", "")),
-                "sources":   ["Selfbot"],
-                "last_seen": None,
+                "name":        f"(Previous Server) {name}",
+                "id":          str(g.get("guild_id", "")),
+                "sources":     ["Selfbot"],
+                "last_seen":   None,
+                "score":       0,
+                "guild_types": [],
+                "guild_flags": [],
+                "activity":    {},
             })
             existing_names.add(name.lower())
 
@@ -161,9 +190,15 @@ def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dic
     stats  = f"Total Records: `{len(condos) + len(exploits)}`\n"
     stats += f"Condo Records: `{len(condos)}`\n"
     stats += f"Exploit Records: `{len(exploits)}`\n"
-    # ExploitWatcher specific count
+
+    # RobloxWatcher total score
+    if agg.rw_flagged:
+        stats += f"RobloxWatcher Score: `{agg.rw_total_score}`\n"
+
+    # ExploitWatcher total score
     if agg.ew_flagged:
-        stats += f"ExploitWatcher: `{agg.ew_exploit_count}` server(s)\n"
+        stats += f"ExploitWatcher: `{agg.ew_exploit_count}` server(s) · Score: `{agg.ew_total_score}`\n"
+
     stats += f"\nFlagged: {'Yes' if agg.sources_flagged else 'No'}"
     if extra and agg.sources_flagged:
         stats += f" — {', '.join(agg.sources_flagged)}"
@@ -181,6 +216,11 @@ def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dic
     if extra and agg.sources_checked:
         stats += f"\nAPIs Checked: `{', '.join(agg.sources_checked)}`"
 
+    # Show roblox IDs from RW/EW
+    roblox_ids = list({*agg.rw_roblox_ids, *agg.ew_roblox_ids})
+    if roblox_ids:
+        stats += f"\nLinked Roblox IDs: `{'`, `'.join(roblox_ids)}`"
+
     head_comp = c_section(header, avatar) if avatar else c_text(header)
     inner = [head_comp, c_sep(), c_text(stats)]
     badges = _score_badges(agg.tase_score_breakdown)
@@ -194,9 +234,15 @@ def build_check_condos(agg: AggregateResult, extra: bool = False, page: int = 0)
     total_pages = max(1, math.ceil(total / PAGE_SIZE_CONDOS))
     page_data   = condos[page * PAGE_SIZE_CONDOS:(page + 1) * PAGE_SIZE_CONDOS]
     timestamps  = [s["last_seen"] for s in condos if s.get("last_seen")]
+
+    rw_score_line = ""
+    if agg.rw_flagged and agg.rw_total_score:
+        rw_score_line = f" · RW Score: `{agg.rw_total_score}`"
+
     header  = f"First Seen: `{format_last_seen(min(timestamps)) if timestamps else 'n/a'}`"
     header += f" · Last Seen: `{format_last_seen(max(timestamps)) if timestamps else 'n/a'}`\n"
-    header += f"Total Records: `{total}`"
+    header += f"Total Records: `{total}`{rw_score_line}"
+
     if page_data:
         lines = []
         for s in page_data:
@@ -217,10 +263,9 @@ def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 
     total_pages = max(1, math.ceil(total / PAGE_SIZE_EXPLOITS))
     page_data   = exploits[page * PAGE_SIZE_EXPLOITS:(page + 1) * PAGE_SIZE_EXPLOITS]
 
-    # Show ExploitWatcher count separately in header if flagged
     ew_note = ""
     if agg.ew_flagged:
-        ew_note = f" · ExploitWatcher: `{agg.ew_exploit_count}`"
+        ew_note = f" · ExploitWatcher Score: `{agg.ew_total_score}`"
 
     header = f"Total Records: `{total}`{ew_note}"
     if page_data:
@@ -234,6 +279,15 @@ def build_check_exploits(agg: AggregateResult, extra: bool = False, page: int = 
 
 def build_check_accounts(agg: AggregateResult) -> dict:
     accounts = []
+
+    # RobloxWatcher linked Roblox IDs
+    roblox_ids = list({*agg.rw_roblox_ids, *agg.ew_roblox_ids})
+    if roblox_ids:
+        accounts.append("**Linked Roblox IDs (RW/EW)**")
+        for rid in roblox_ids:
+            accounts.append(f"• `{rid}`")
+        accounts.append("")
+
     if agg.rotector_connections:
         accounts.append("**Linked Roblox Accounts**")
         for conn in agg.rotector_connections:
@@ -285,9 +339,13 @@ def build_lookup_main(user, agg: AggregateResult, extra: bool = False, page: int
 
     ew_line = ""
     if agg.ew_flagged:
-        ew_line = f"\nExploitWatcher: `{agg.ew_exploit_count}` exploit server(s)"
+        ew_line = f"\nExploitWatcher: `{agg.ew_exploit_count}` server(s) · Score: `{agg.ew_total_score}`"
 
-    header = f"## {name}\n{uid_line}\nLast Seen: `{last_seen}`{rotector_line}{ew_line}"
+    rw_line = ""
+    if agg.rw_flagged:
+        rw_line = f"\nRobloxWatcher Score: `{agg.rw_total_score}`"
+
+    header = f"## {name}\n{uid_line}\nLast Seen: `{last_seen}`{rotector_line}{ew_line}{rw_line}"
     badges = _score_badges(agg.tase_score_breakdown)
     if badges: header += f"\n\n{badges}"
 
@@ -316,6 +374,15 @@ def build_lookup_main(user, agg: AggregateResult, extra: bool = False, page: int
 def build_lookup_accounts(user, agg: AggregateResult) -> Optional[dict]:
     name     = _display_name(user, agg)
     accounts = [f"## Accounts — {name}", ""]
+
+    # RW/EW linked roblox IDs
+    roblox_ids = list({*agg.rw_roblox_ids, *agg.ew_roblox_ids})
+    if roblox_ids:
+        accounts.append("**Linked Roblox IDs (RW/EW)**")
+        for rid in roblox_ids:
+            accounts.append(f"• `{rid}`")
+        accounts.append("")
+
     if agg.rotector_connections:
         accounts.append("**Linked Roblox Accounts**")
         for conn in agg.rotector_connections:
@@ -359,9 +426,8 @@ def build_lookup_exploit(user, agg: AggregateResult, extra: bool = False) -> dic
     if total:
         sources = sorted({src for s in exploits for src in s.get("sources", [])})
         head    = f"## Detected in {' / '.join(sources)}:"
-        # Add ExploitWatcher note if flagged
         if agg.ew_flagged:
-            head += f"\n-# ExploitWatcher: {agg.ew_exploit_count} exploit server(s)"
+            head += f"\n-# ExploitWatcher: {agg.ew_exploit_count} exploit server(s) · Score: {agg.ew_total_score}"
         lines   = [_server_line(s, extra) for s in exploits]
         note    = f"\n\n-# Data is a snapshot, not live.\n-# Page 1/1 · Servers: {total}"
         inner   = [c_text(head), c_sep(), c_text("\n".join(lines) + note)]
