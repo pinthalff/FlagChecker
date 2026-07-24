@@ -2,6 +2,8 @@
 # Keeps the flagchecker alive on Railway
 # Auto restarts, health checks, crash recovery
 
+# runtime.py — FlagChecker bot
+
 from __future__ import annotations
 
 import asyncio
@@ -165,11 +167,12 @@ async def run():
         restart_task = None
 
         try:
-            # Fresh import every restart
             if "bot" in sys.modules:
                 del sys.modules["bot"]
 
-            from bot import FlagCheckerBot, DISCORD_TOKEN
+            from bot import FlagCheckerBot
+            import config
+            DISCORD_TOKEN = config.DISCORD_TOKEN
 
             _log(f"Starting {BOT_NAME} (restart #{_restart_count})")
 
@@ -208,7 +211,6 @@ async def run():
                 extra  = f"Error: {str(e)[:200]}\nCrash #{_crash_count}"
             )
 
-            # Crash loop detection
             if now - _last_crash < 60:
                 if _crash_count >= MAX_FAST_CRASHES:
                     backoff = random.randint(300, 600)
