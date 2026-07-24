@@ -1,3 +1,5 @@
+# detection.py
+
 from __future__ import annotations
 import asyncio
 import json as _json
@@ -61,6 +63,18 @@ async def _fetch_robloxwatcher(session, user_id: str) -> dict:
     return await _get(session,
         "https://robloxwatcher.info/checker/api/check.php",
         params={"id": user_id, "key": config.ROBLOXWATCHER_API_KEY})
+
+async def _fetch_exploitwatcher(session, user_id: str) -> dict:
+    """
+    ExploitWatcher — separate API key from RobloxWatcher.
+    Same domain, different key, returns exploit server data.
+    """
+    key = config.EXPLOITWATCHER_API_KEY
+    if not key:
+        return {}
+    return await _get(session,
+        "https://robloxwatcher.info/checker/api/check.php",
+        params={"id": user_id, "key": key})
 
 async def _fetch_rotector_discord(session, discord_id: str) -> dict:
     return await _get(session,
@@ -184,6 +198,8 @@ def correlate_exploit_servers(agg: AggregateResult) -> list[dict]:
     name_index: dict = {}
     for s in agg.rw_exploit_servers:           _merge_server(by_key, name_index, s, "RobloxWatcher")
     for s in agg.bloxycleaner_exploit_servers: _merge_server(by_key, name_index, s, "BloxyCleaner")
+    # ExploitWatcher servers merged into exploits
+    for s in agg.ew_exploit_servers:           _merge_server(by_key, name_index, s, "ExploitWatcher")
     return sorted(by_key.values(), key=lambda x: x["last_seen"] or 0, reverse=True)
 
 
@@ -242,6 +258,9 @@ class DetectionService:
             if "ROBLOXWATCHER" not in disabled_apis:
                 checked.append("RobloxWatcher")
                 jobs.append(("rw", _fetch_robloxwatcher(sess, user_id)))
+            if "EXPLOITWATCHER" not in disabled_apis and config.EXPLOITWATCHER_API_KEY:
+                checked.append("ExploitWatcher")
+                jobs.append(("ew", _fetch_exploitwatcher(sess, user_id)))
             if "ROTECTOR" not in disabled_apis:
                 checked.append("Rotector")
                 jobs.append(("rotector_discord", _fetch_rotector_discord(sess, user_id)))
@@ -295,6 +314,15 @@ class DetectionService:
                 agg.rw_exploit_count   = len(agg.rw_exploit_servers)
                 if agg.rw_condo_count or agg.rw_exploit_count:
                     agg.sources_flagged.append("RobloxWatcher")
+
+            elif key == "ew" and res:
+                # ExploitWatcher — separate key, exploit servers only
+                ew_exploit = res.get("exploit_servers") or []
+                agg.ew_exploit_servers = ew_exploit
+                agg.ew_exploit_count   = len(ew_exploit)
+                agg.ew_flagged         = agg.ew_exploit_count > 0
+                if agg.ew_flagged and "ExploitWatcher" not in agg.sources_flagged:
+                    agg.sources_flagged.append("ExploitWatcher")
 
             elif key == "rotector_discord" and res:
                 data         = res.get("data") or {}
@@ -357,8 +385,6 @@ class DetectionService:
                 agg.sources_flagged.append("RoCleaner")
 
         # ── Selfbot DB fallback ──
-        # Always reads seen_users from DB regardless of SELFBOT_ENABLED
-        # So even when selfbot is banned, scraped data still shows up
         if not roblox_only and not agg.selfbot_guilds and self._storage:
             if hasattr(self._storage, "build_selfbot_report"):
                 try:
