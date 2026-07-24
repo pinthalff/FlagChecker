@@ -8,6 +8,8 @@
 
 # v2.py
 
+# v2.py
+
 from __future__ import annotations
 import math
 from typing import Optional
@@ -97,43 +99,29 @@ def _score_badges(breakdown: dict) -> str:
 
 
 def _server_line(s: dict, extra: bool) -> str:
-    sources    = s.get("sources", [])
-    is_selfbot = "Selfbot" in sources
-    still_in   = s.get("still_in")
-
     line = f"• **{s['name']}**"
-    if s.get("id"): line += f" (`{s['id']}`)"
+    if s.get("id"):
+        line += f" (`{s['id']}`)"
 
-    # Current/Previous only on selfbot servers
-    if is_selfbot and still_in is True:
-        line += " — `Current`"
-    elif is_selfbot and still_in is False:
-        line += " — `Previous`"
+    if extra:
+        if s.get("sources"):
+            line += f" — `{', '.join(s['sources'])}`"
+        if s.get("guild_types"):
+            line += f"\n  ↳ Type: `{', '.join(s['guild_types'])}`"
+        if s.get("guild_flags"):
+            line += f"\n  ↳ Flags: `{', '.join(s['guild_flags'])}`"
+        if s.get("score"):
+            line += f"\n  ↳ Score: `{s['score']}`"
+        act = s.get("activity", {})
+        if act and any(act.values()):
+            parts = []
+            if act.get("messages"):  parts.append(f"{act['messages']} msgs")
+            if act.get("reactions"): parts.append(f"{act['reactions']} reactions")
+            if act.get("vc_joins"):  parts.append(f"{act['vc_joins']} vc joins")
+            if act.get("boosts"):    parts.append(f"{act['boosts']} boosts")
+            if parts:
+                line += f"\n  ↳ Activity: `{', '.join(parts)}`"
 
-    if extra and sources:
-        line += f" — `{', '.join(sources)}`"
-
-    # Type only when extra=True
-    if extra and s.get("guild_types"):
-        line += f"\n  ↳ Type: `{', '.join(s['guild_types'])}`"
-
-    if s.get("guild_flags"):
-        line += f"\n  ↳ Flags: `{', '.join(s['guild_flags'])}`"
-
-    # Score always shown when non-zero
-    if s.get("score"):
-        line += f"\n  ↳ Score: `{s['score']}`"
-
-    # Activity always shown when present
-    act = s.get("activity", {})
-    if act and any(act.values()):
-        parts = []
-        if act.get("messages"):  parts.append(f"{act['messages']} msgs")
-        if act.get("reactions"): parts.append(f"{act['reactions']} reactions")
-        if act.get("vc_joins"):  parts.append(f"{act['vc_joins']} vc joins")
-        if act.get("boosts"):    parts.append(f"{act['boosts']} boosts")
-        if parts:
-            line += f"\n  ↳ Activity: `{', '.join(parts)}`"
     return line
 
 
@@ -168,7 +156,6 @@ def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
                 "guild_types": [],
                 "guild_flags": [],
                 "activity":    {},
-                "still_in":    True,
             })
             existing_names.add(name.lower())
 
@@ -184,7 +171,6 @@ def _merge_selfbot_into_exploits(exploits: list, agg: AggregateResult) -> list:
                 "guild_types": [],
                 "guild_flags": [],
                 "activity":    {},
-                "still_in":    False,
             })
             existing_names.add(name.lower())
 
@@ -216,7 +202,6 @@ def build_check_overview(user, agg: AggregateResult, extra: bool = False) -> dic
     stats += f"\nFlagged: {'Yes' if agg.sources_flagged else 'No'}"
     if extra and agg.sources_flagged:
         stats += f" — {', '.join(agg.sources_flagged)}"
-
     if agg.rotector_flag_type is not None:
         flag = config.ROTECTOR_FLAG_LABELS.get(agg.rotector_flag_type, "Unknown")
         conf = agg.rotector_confidence or 0
