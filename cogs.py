@@ -15,6 +15,8 @@
 
 # cogs.py
 
+# cogs.py
+
 from __future__ import annotations
 import json
 import logging
@@ -37,8 +39,8 @@ from v2 import (
     send_v2, edit_v2,
     c_text, c_sep, c_section, c_container,
     build_check_overview, build_check_condos, build_check_exploits,
-    build_check_accounts,
-    build_lookup_main, build_lookup_exploit, build_lookup_accounts,
+    build_check_accounts, build_check_profile, build_check_details,
+    build_lookup_main, build_lookup_exploit, build_lookup_profile, build_lookup_accounts,
     PAGE_SIZE_CONDOS, PAGE_SIZE_EXPLOITS,
 )
 
@@ -98,11 +100,55 @@ def _fmt_role(r) -> str:
 # Selfbot V2 builders
 # ─────────────────────────────────────────────
 
+def _build_scraped_inline(agg: AggregateResult) -> str:
+    """
+    Returns scraped server presence as inline text
+    injected into the Exploits section.
+    No separate Scraped Servers section.
+    """
+    guilds = getattr(agg, "selfbot_guilds", []) or []
+    active = getattr(agg, "selfbot_active_guilds", []) or []
+    prev   = getattr(agg, "selfbot_prev_guilds",   []) or []
+
+    if not guilds:
+        return ""
+
+    lines = [
+        "## Scraped Server Presence",
+        f"Total: `{len(guilds)}` · Current: `{len(active)}` · Previous: `{len(prev)}`"
+    ]
+
+    if active:
+        lines.append("\n**Current Servers**")
+        for g in active:
+            name   = g.get("guild_name", "Unknown")
+            gid    = g.get("guild_id", "?")
+            roles  = g.get("roles", [])
+            rnames = [r.get("name", str(r)) if isinstance(r, dict) else str(r) for r in roles[:3]]
+            rstr   = f" — {', '.join(rnames)}" if rnames else ""
+            lines.append(f"• **{name}** (`{gid}`){rstr}")
+
+    if prev:
+        lines.append("\n**Previous Servers**")
+        for g in prev:
+            name = g.get("guild_name", "Unknown")
+            gid  = g.get("guild_id", "?")
+            lines.append(f"• (Previous Server) **{name}** (`{gid}`)")
+
+    return "\n".join(lines)
+
+
 def _build_roles_v2(gd: dict) -> dict:
+    """
+    Builds the roles embed for a scraped guild.
+    Reads roles from DB data — the selfbot saves roles[] per seen_users doc.
+    """
     guild_name    = gd.get("guild_name", "Unknown")
     roles         = gd.get("roles", [])
     still_present = gd.get("still_in_server") is True
     join_date     = gd.get("join_date", "unknown")
+    first_seen    = gd.get("first_seen", "Unknown")
+    last_seen     = gd.get("last_seen", "Unknown")
     status        = "Current" if still_present else "Previous"
 
     try:
@@ -110,13 +156,18 @@ def _build_roles_v2(gd: dict) -> dict:
     except Exception:
         jd = "unknown"
 
-    role_lines = "\n".join(_fmt_role(r) for r in roles) if roles else "No roles"
+    # Handle both list-of-dicts and list-of-strings from DB
+    if roles:
+        role_lines = "\n".join(_fmt_role(r) for r in roles)
+    else:
+        role_lines = "No roles recorded"
 
     body = (
         f"**{guild_name}**\n"
-        f"{jd} — {status}\n"
+        f"Status: {status} · Joined: {jd}\n"
+        f"First Seen: {first_seen} · Last Seen: {last_seen}\n"
         f"\n"
-        f"**{guild_name} roles:**\n"
+        f"**Roles in {guild_name}:**\n"
         f"{role_lines}"
     )
 
@@ -125,35 +176,17 @@ def _build_roles_v2(gd: dict) -> dict:
 
 def _build_messages_v2(gd: dict) -> dict:
     guild_name    = gd.get("guild_name", "Unknown")
-    recent_msgs   = gd.get("recent_messages", [])
     still_present = gd.get("still_in_server") is True
     join_date     = gd.get("join_date", "unknown")
     status        = "Current" if still_present else "Previous"
 
-    try:
-        jd = join_date[:10] if join_date and join_date != "unknown" else "unknown"
-    except Exception:
-        jd = "unknown"
-
-    lines = []
-    for m in recent_msgs[:25]:
-        content = (m.get("content") or "[no text]").strip()
-        sent_at = m.get("sent_at", "")
-        try:
-            dt       = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
-            h12      = dt.hour % 12 or 12
-            time_str = f"{h12}:{dt.minute:02d}:{dt.second:02d}"
-        except Exception:
-            time_str = sent_at[:10] if sent_at else "?"
-        lines.append(f"[{time_str}]: {content}")
-
-    msg_block = "\n".join(lines) if lines else "No messages recorded"
-
+    # ── Messages not activated yet ──
+    # Wire this up when selfbot message logging is reliable
     body = (
         f"**{guild_name}**\n"
-        f"{jd} — {status}\n"
+        f"Status: {status}\n"
         f"\n"
-        f"{msg_block}"
+        f"This is not activated by the bot owner yet."
     )
 
     return c_container(c_text(body))
@@ -166,16 +199,23 @@ def _build_messages_v2(gd: dict) -> dict:
 class _SelfbotRolesSelect(discord.ui.Select):
     def __init__(self, guilds: list, invoker_id: int, row: int = 0):
         self.invoker_id  = invoker_id
-        self._guilds_map = {str(g.get("guild_id", str(i))): g for i, g in enumerate(guilds)}
+        # Key by guild_id — handle duplicate guild_ids with index fallback
+        self._guilds_map = {}
+        for i, g in enumerate(guilds):
+            key = str(g.get("guild_id", str(i)))
+            self._guilds_map[key] = g
+
         options = []
-        for g in guilds[:25]:
+        for i, g in enumerate(guilds[:25]):
             label         = g.get("guild_name", "Unknown")[:100]
-            value         = str(g.get("guild_id", "0"))[:100]
+            value         = str(g.get("guild_id", str(i)))[:100]
             still_present = g.get("still_in_server") is True
             desc          = "Current" if still_present else "Previous"
             options.append(discord.SelectOption(label=label, value=value, description=desc))
+
         if not options:
             options.append(discord.SelectOption(label="No servers found", value="none"))
+
         super().__init__(placeholder="Roles — pick a server", options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
@@ -192,17 +232,23 @@ class _SelfbotRolesSelect(discord.ui.Select):
 class _SelfbotMessagesSelect(discord.ui.Select):
     def __init__(self, guilds: list, invoker_id: int, row: int = 0):
         self.invoker_id  = invoker_id
-        self._guilds_map = {str(g.get("guild_id", str(i))): g for i, g in enumerate(guilds)}
+        self._guilds_map = {}
+        for i, g in enumerate(guilds):
+            key = str(g.get("guild_id", str(i)))
+            self._guilds_map[key] = g
+
         options = []
-        for g in guilds[:25]:
+        for i, g in enumerate(guilds[:25]):
             label     = g.get("guild_name", "Unknown")[:100]
-            value     = str(g.get("guild_id", "0"))[:100]
+            value     = str(g.get("guild_id", str(i)))[:100]
             msg_count = g.get("message_count", 0)
             still     = g.get("still_in_server") is True
             desc      = f"{'Current' if still else 'Previous'} · {msg_count} msg(s)"
             options.append(discord.SelectOption(label=label, value=value, description=desc[:100]))
+
         if not options:
             options.append(discord.SelectOption(label="No servers found", value="none"))
+
         super().__init__(placeholder="Messages — pick a server", options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
@@ -248,17 +294,14 @@ class _MessagesBtn(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.invoker_id:
             return await interaction.response.send_message("Not your lookup.", ephemeral=True)
-        if not self.guilds:
-            return await interaction.response.send_message("No scraped data.", ephemeral=True)
-        if len(self.guilds) == 1:
-            await send_v2(interaction, _build_messages_v2(self.guilds[0]), ephemeral=True)
-        else:
-            view = discord.ui.View(timeout=120)
-            view.add_item(_SelfbotMessagesSelect(self.guilds, self.invoker_id, row=0))
-            await interaction.response.send_message("Pick a server:", view=view, ephemeral=True)
+        # Messages not activated yet — always show this regardless of guild count
+        return await interaction.response.send_message(
+            "This is not activated by the bot owner yet.",
+            ephemeral=True
+        )
 
 
-# ── Events ─────────────────────────────────────────────────────────────────────
+# ── Events ─────────────────────────────────────────────────────────────────
 
 class EventsCog(commands.Cog):
     def __init__(self, bot) -> None:
@@ -317,7 +360,7 @@ class EventsCog(commands.Cog):
         except discord.HTTPException: pass
 
 
-# ── Nav buttons ────────────────────────────────────────────────────────────────
+# ── Nav buttons ────────────────────────────────────────────────────────────
 
 class _NavBtn(discord.ui.Button):
     def __init__(self, label, invoker_id, view_ref, delta, row):
@@ -341,7 +384,7 @@ class _PageLabel(discord.ui.Button):
     async def callback(self, interaction): pass
 
 
-# ═══════════════ /search ═══════════════
+# ══════════════════ /search ══════════════════
 
 class CheckCog(commands.Cog):
     def __init__(self, bot) -> None: self.bot = bot
@@ -396,7 +439,7 @@ class _CheckView(discord.ui.View):
         # Row 0 — section select
         self.add_item(_CheckSelect(self))
 
-        # Row 1 — nav + Roles + Messages
+        # Row 1 — nav + Roles + Messages buttons
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=1)
         self._lbl  = _PageLabel(row=1)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=1)
@@ -426,10 +469,24 @@ class _CheckView(discord.ui.View):
 
     def build(self) -> dict:
         s = self.section
-        if s == "overview":  return build_check_overview(self.user, self.agg, self.extra)
-        if s == "condos":    return build_check_condos(self.agg, self.extra, self.page)
-        if s == "exploits":  return build_check_exploits(self.agg, self.extra, self.page)
+        if s == "overview":
+            return build_check_overview(self.user, self.agg, self.extra)
+        if s == "condos":
+            return build_check_condos(self.agg, self.extra, self.page)
+        if s == "exploits":
+            # Build exploits then inject scraped servers at the bottom
+            result       = build_check_exploits(self.agg, self.extra, self.page)
+            scraped_text = _build_scraped_inline(self.agg)
+            if scraped_text and result and "components" in result:
+                try:
+                    result["components"].append(c_sep())
+                    result["components"].append(c_text(scraped_text))
+                except Exception:
+                    pass
+            return result
         if s == "accounts":  return build_check_accounts(self.agg)
+        if s == "profile":   return build_check_profile(self.agg)
+        if s == "details":   return build_check_details(self.agg)
         return build_check_overview(self.user, self.agg, self.extra)
 
     async def do_edit(self, interaction):
@@ -444,6 +501,8 @@ class _CheckSelect(discord.ui.Select):
             options = [
                 discord.SelectOption(label="Overview",  value="overview"),
                 discord.SelectOption(label="Accounts",  value="accounts"),
+                discord.SelectOption(label="Details",   value="details"),
+                discord.SelectOption(label="Profile",   value="profile"),
             ]
         else:
             options = [
@@ -451,7 +510,10 @@ class _CheckSelect(discord.ui.Select):
                 discord.SelectOption(label="Condos",    value="condos"),
                 discord.SelectOption(label="Exploits",  value="exploits"),
                 discord.SelectOption(label="Accounts",  value="accounts"),
+                discord.SelectOption(label="Profile",   value="profile"),
+                discord.SelectOption(label="Details",   value="details"),
             ]
+            # No separate Scraped Servers — lives under Exploits
 
         super().__init__(placeholder="Select section", options=options, row=0)
         self.view_ref = view_ref
@@ -466,7 +528,7 @@ class _CheckSelect(discord.ui.Select):
         await vr.do_edit(interaction)
 
 
-# ═══════════════ /search2 ═══════════════
+# ══════════════════ /search2 ══════════════════
 
 class LookupCog(commands.Cog):
     def __init__(self, bot) -> None: self.bot = bot
@@ -518,7 +580,7 @@ class _LookupView(discord.ui.View):
         self.invoker_id = invoker_id
         self.page       = 0
 
-        # Row 0 — nav + Roles + Messages
+        # Row 0 — nav + Roles + Messages right next to them
         self._prev = _NavBtn("◀", invoker_id, self, -1, row=0)
         self._lbl  = _PageLabel(row=0)
         self._next = _NavBtn("▶", invoker_id, self, +1, row=0)
@@ -547,6 +609,7 @@ class _LookupView(discord.ui.View):
             build_lookup_main(self.user, self.agg, self.extra, self.page),
             build_lookup_exploit(self.user, self.agg, self.extra),
             build_lookup_accounts(self.user, self.agg),
+            build_lookup_profile(self.user, self.agg),
         ]
         return [c for c in cards if c is not None]
 
